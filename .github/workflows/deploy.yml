@@ -1,0 +1,59 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # No GitHub "environment" here: it would change the OIDC subject claim and
+    # no longer match the trust policy of the deploy role (ref:refs/heads/main).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload to S3
+        env:
+          BUCKET: ${{ vars.S3_BUCKET }}
+        run: |
+          # Hashed assets are immutable; upload them before the new index.html.
+          aws s3 sync dist/assets "s3://$BUCKET/assets" \
+            --exclude "*.wasm" \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp dist/assets "s3://$BUCKET/assets" --recursive \
+            --exclude "*" --include "*.wasm" \
+            --content-type application/wasm \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp dist/index.html "s3://$BUCKET/index.html" \
+            --content-type "text/html; charset=utf-8" \
+            --cache-control "no-cache"
+          # Remove files from older builds.
+          aws s3 sync dist "s3://$BUCKET" --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/" "/index.html"
