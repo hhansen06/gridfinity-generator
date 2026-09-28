@@ -18,6 +18,14 @@ npm run build    # statische Seite in dist/
 
 `dist/` kann auf jedem statischen Webserver liegen (relative Pfade, `.wasm` braucht den MIME-Type `application/wasm`).
 
+## Docker
+
+```sh
+docker compose up -d --build     # http://localhost:8080
+```
+
+Anderer Port: `GRIDFINITY_PORT=9000 docker compose up -d --build`. Der Container baut die App und liefert sie über nginx (ohne Root-Rechte, schreibgeschützt) mit denselben Security-Headern wie das AWS-Hosting aus.
+
 Hosting auf AWS (S3 + CloudFront, Deployment per GitHub Actions): siehe [`infra/README.md`](infra/README.md).
 
 ## Aufbau
