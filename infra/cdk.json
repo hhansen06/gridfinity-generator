@@ -1,0 +1,10 @@
+{
+  "app": "npx tsx bin/app.ts",
+  "context": {
+    "githubRepo": "",
+    "githubBranch": "main",
+    "githubOidcProviderArn": "",
+    "domainName": "",
+    "certificateArn": ""
+  }
+}

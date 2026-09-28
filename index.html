@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Gridfinity-Boxen im Browser konfigurieren und als STL herunterladen – mit Beschriftung und Logo." />
+    <title>Gridfinity Generator</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='12' height='12' rx='2' fill='%23f28c28'/%3E%3Crect x='17' y='3' width='12' height='12' rx='2' fill='%239aa3ad'/%3E%3Crect x='3' y='17' width='12' height='12' rx='2' fill='%239aa3ad'/%3E%3Crect x='17' y='17' width='12' height='12' rx='2' fill='%239aa3ad'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="brand">
+          <h1>Gridfinity Generator</h1>
+          <p>Box konfigurieren, Beschriftung gestalten, als STL oder 3MF herunterladen.</p>
+        </header>
+
+        <form id="form" autocomplete="off">
+          <section>
+            <h2>Größe</h2>
+            <div class="dims">
+              <label class="dim">
+                <span>Breite X</span>
+                <input type="number" name="x" min="1" max="10" step="1" value="2" />
+                <small data-mm="x"></small>
+              </label>
+              <label class="dim">
+                <span>Tiefe Y</span>
+                <input type="number" name="y" min="1" max="10" step="1" value="1" />
+                <small data-mm="y"></small>
+              </label>
+              <label class="dim">
+                <span>Höhe Z</span>
+                <input type="number" name="z" min="1" max="25" step="1" value="5" />
+                <small data-mm="z"></small>
+              </label>
+            </div>
+            <p class="hint">1 Einheit = 42 mm Raster, Höhe in 7-mm-Schritten.</p>
+          </section>
+
+          <section>
+            <h2>Optionen</h2>
+            <label class="check"><input type="checkbox" name="lip" checked /> Stapelrand</label>
+            <label class="check"><input type="checkbox" name="magnets" /> Magnetlöcher (6×2 mm)</label>
+            <div class="colors">
+              <label class="color"><input type="color" name="bodyColor" value="#9aa3ad" /> Farbe Box</label>
+              <label class="color"><input type="color" name="reliefColor" value="#f28c28" /> Farbe Schrift</label>
+            </div>
+          </section>
+
+          <section>
+            <div class="section-head">
+              <h2>Beschriftung</h2>
+              <label class="switch"><input type="checkbox" name="label" checked /><span></span></label>
+            </div>
+            <div id="label-fields" class="fields">
+              <label class="field">
+                <span>Text</span>
+                <textarea name="text" rows="2" placeholder="z. B. M3 × 12">M3 × 12</textarea>
+                <small>Mit Enter mehrzeilig.</small>
+              </label>
+              <div class="row">
+                <label class="field">
+                  <span>Schriftart</span>
+                  <select name="font">
+                    <option value="roboto">Roboto Bold</option>
+                    <option value="roboto-slab">Roboto Slab</option>
+                    <option value="roboto-mono">Roboto Mono</option>
+                    <option value="bebas">Bebas Neue</option>
+                  </select>
+                </label>
+                <label class="field narrow">
+                  <span>Größe (mm)</span>
+                  <input type="number" name="textSize" min="3" max="30" step="0.5" value="8" />
+                </label>
+              </div>
+
+              <div class="field">
+                <span>Kopfform <output id="head-out" class="picked"></output></span>
+                <div class="picker" id="head-picker" role="radiogroup" aria-label="Kopfform"></div>
+              </div>
+
+              <div class="field">
+                <span>Antrieb <output id="drive-out" class="picked"></output></span>
+                <div class="picker" id="drive-picker" role="radiogroup" aria-label="Antrieb"></div>
+              </div>
+
+              <div class="field">
+                <span>Eigenes Logo</span>
+                <div class="logo-drop" id="logo-drop">
+                  <input type="file" id="logo-input" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden />
+                  <button type="button" class="ghost" id="logo-pick">Datei wählen…</button>
+                  <span id="logo-name" class="muted">SVG, PNG oder JPG</span>
+                  <button type="button" class="icon" id="logo-clear" title="Logo entfernen" hidden>✕</button>
+                </div>
+                <div id="raster-options" class="raster" hidden>
+                  <label class="field">
+                    <span>Schwellwert <output id="threshold-out">128</output></span>
+                    <input type="range" name="threshold" min="10" max="245" value="128" />
+                  </label>
+                  <label class="check"><input type="checkbox" name="invert" /> Invertieren</label>
+                </div>
+                <small id="logo-error" class="error" hidden></small>
+              </div>
+
+              <div class="row">
+                <label class="field">
+                  <span>Ausführung</span>
+                  <select name="relief">
+                    <option value="raised">Erhaben</option>
+                    <option value="engraved">Graviert</option>
+                    <option value="inlay">Eingelegt (bündig)</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Ausrichtung</span>
+                  <select name="align">
+                    <option value="left">Links</option>
+                    <option value="center">Mittig</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field">
+                <span>Tiefe der Lasche <output id="depth-out">12</output> mm</span>
+                <input type="range" name="depth" min="8" max="20" step="0.5" value="12" />
+              </label>
+            </div>
+          </section>
+
+          <section id="batch">
+            <div class="section-head">
+              <h2>Stapelliste <output id="batch-count" class="badge"></output></h2>
+              <button type="button" class="link" id="batch-clear" hidden>Liste leeren</button>
+            </div>
+            <p class="hint">Mehrere Boxen sammeln und zusammen als eine 3MF-Datei herunterladen.</p>
+            <button type="button" class="ghost wide" id="batch-add">+ Aktuelle Box hinzufügen</button>
+            <details class="bulk">
+              <summary>Mehrere Beschriftungen auf einmal</summary>
+              <label class="field">
+                <textarea id="batch-text" rows="4" placeholder="M3 × 12&#10;M4 × 20&#10;M5 × 30|DIN 912"></textarea>
+                <small>Eine Box pro Zeile, mit Größe, Kopfform und Antrieb von oben. „|“ erzeugt einen Zeilenumbruch auf dem Etikett.</small>
+              </label>
+              <button type="button" class="ghost wide" id="batch-add-lines">Alle hinzufügen</button>
+            </details>
+            <ul class="batch-list" id="batch-list"></ul>
+            <p class="hint" id="batch-empty">Noch keine Boxen in der Liste.</p>
+          </section>
+        </form>
+
+        <footer class="actions">
+          <div class="stats" id="stats">Lade Geometrie-Engine…</div>
+          <div class="downloads">
+            <button type="button" id="download" class="primary" disabled>STL</button>
+            <button type="button" id="download-3mf" class="primary" disabled title="Box und Schrift als getrennte Teile mit Farben">3MF mit Farben</button>
+          </div>
+          <button type="button" id="batch-download" class="secondary" hidden></button>
+        </footer>
+      </aside>
+
+      <main class="stage">
+        <div id="viewer" class="viewer"></div>
+        <div class="legend">
+          <span><i class="sw body"></i>Box</span>
+          <span><i class="sw relief"></i>Beschriftung</span>
+          <span class="muted">Ziehen: drehen · Scrollen: zoomen · Rechtsklick: verschieben</span>
+        </div>
+        <div id="status" class="status" hidden></div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
