@@ -10,6 +10,8 @@ new SiteStack(app, 'GridfinityGenerator', {
     region: ctx('region') ?? 'eu-central-1',
   },
   githubRepo: ctx('githubRepo'),
+  githubOwnerId: ctx('githubOwnerId'),
+  githubRepoId: ctx('githubRepoId'),
   githubBranch: ctx('githubBranch') ?? 'main',
   githubOidcProviderArn: ctx('githubOidcProviderArn'),
   domainName: ctx('domainName'),

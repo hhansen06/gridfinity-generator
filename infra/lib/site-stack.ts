@@ -9,6 +9,11 @@ import type { Construct } from 'constructs';
 export interface SiteStackProps extends StackProps {
   // "owner/repo" allowed to deploy via GitHub Actions OIDC.
   githubRepo?: string;
+  // Numeric owner/repo IDs. GitHub now puts them into the OIDC subject
+  // ("repo:owner@123/repo@456:ref:…"), pinning trust to the exact repository
+  // even if the name is later reused.
+  githubOwnerId?: string;
+  githubRepoId?: string;
   githubBranch: string;
   // An account can hold only one GitHub OIDC provider; reuse it if present.
   githubOidcProviderArn?: string;
@@ -31,6 +36,15 @@ const CONTENT_SECURITY_POLICY = [
   "form-action 'none'",
   "frame-ancestors 'none'",
 ].join('; ');
+
+function githubSubject(props: SiteStackProps): string {
+  const [owner, repo] = props.githubRepo!.split('/');
+  const path =
+    props.githubOwnerId && props.githubRepoId
+      ? `${owner}@${props.githubOwnerId}/${repo}@${props.githubRepoId}`
+      : `${owner}/${repo}`;
+  return `repo:${path}:ref:refs/heads/${props.githubBranch}`;
+}
 
 export class SiteStack extends Stack {
   constructor(scope: Construct, id: string, props: SiteStackProps) {
@@ -107,9 +121,9 @@ export class SiteStack extends Stack {
         description: `Deploy Gridfinity Generator from ${props.githubRepo}`,
         maxSessionDuration: Duration.hours(1),
         assumedBy: new iam.OpenIdConnectPrincipal(provider, {
-          StringEquals: { 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com' },
-          StringLike: {
-            'token.actions.githubusercontent.com:sub': `repo:${props.githubRepo}:ref:refs/heads/${props.githubBranch}`,
+          StringEquals: {
+            'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+            'token.actions.githubusercontent.com:sub': githubSubject(props),
           },
         }),
       });

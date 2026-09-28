@@ -9,21 +9,23 @@ Die App ist eine rein statische Seite. Der CDK-Stack legt an:
 
 ## Einmalige Einrichtung
 
-Voraussetzungen: AWS-Konto, lokal angemeldete AWS-CLI (`aws sts get-caller-identity` funktioniert), Node 20.
+Voraussetzungen: AWS-Konto, lokal angemeldete AWS-CLI (`aws sts get-caller-identity` funktioniert), Node 22.
 
 ```sh
 cd infra
 npm install
 npx cdk bootstrap          # einmal pro Konto und Region
-npx cdk deploy -c githubRepo=DEIN-GITHUB-USER/gridfinity-generator
+npx cdk deploy
 ```
+
+Vorher in `cdk.json` unter `context` eintragen: `githubRepo` (`owner/repo`) sowie `githubOwnerId` und `githubRepoId`. GitHub schreibt diese numerischen IDs in den OIDC-Token (`repo:owner@ID/repo@ID:ref:…`); die Rolle vertraut nur genau diesem Repository. Die IDs liefert `gh api repos/OWNER/REPO --jq '.owner.id, .id'` (bei öffentlichen Repos auch ohne Login über `https://api.github.com/repos/OWNER/REPO`). Alternativ stehen sie nach einem fehlgeschlagenen Workflow-Lauf in CloudTrail beim Event `AssumeRoleWithWebIdentity`.
 
 Die Ausgaben am Ende (`BucketName`, `DistributionId`, `DeployRoleArn`, `SiteUrl`) werden gleich gebraucht.
 
 Existiert im Konto schon ein GitHub-OIDC-Provider (pro Konto nur einer möglich), dessen ARN mitgeben:
 
 ```sh
-npx cdk deploy -c githubRepo=… -c githubOidcProviderArn=arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com
+npx cdk deploy -c githubOidcProviderArn=arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com
 ```
 
 Die Parameter lassen sich auch dauerhaft in `cdk.json` unter `context` eintragen.

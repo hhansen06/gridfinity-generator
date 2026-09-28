@@ -1,7 +1,9 @@
 {
   "app": "npx tsx bin/app.ts",
   "context": {
-    "githubRepo": "",
+    "githubRepo": "hhansen06/gridfinity-generator",
+    "githubOwnerId": "6222378",
+    "githubRepoId": "1393888964",
     "githubBranch": "main",
     "githubOidcProviderArn": "",
     "domainName": "",
