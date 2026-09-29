@@ -6,7 +6,7 @@
     "githubRepoId": "1393888964",
     "githubBranch": "main",
     "githubOidcProviderArn": "",
-    "domainName": "",
-    "certificateArn": ""
+    "domainName": "gridfinity.h2com.eu",
+    "certificateArn": "arn:aws:acm:us-east-1:204753106971:certificate/047420b9-861b-4bee-8a6d-31b820799340"
   }
 }
