@@ -5,10 +5,19 @@ export const GRID = 42;
 export const HEIGHT_UNIT = 7;
 const CLEARANCE = 0.5;
 const OUTER_RADIUS = 3.75;
-const BASE_HEIGHT = 4.75;
+// Foot profile (0.8 / 1.8 / 2.15) plus the bridge tying the feet together;
+// the inner floor sits at BASE_HEIGHT.
+const BASE_PROFILE_HEIGHT = 4.75;
+const BASE_HEIGHT = 7;
 const WALL = 1.2;
-const FLOOR = 1.2;
-const LIP_HEIGHT = 4.4;
+// Stacking lip, bottom to top: 0.7 at 45°, 1.8 vertical, 1.9 at 45° (4.4 total,
+// 2.6 deep). Below it a 1.2 mm vertical support, then 45° out to the wall.
+const LIP_DEPTH = 2.6;
+const LIP_SUPPORT = 1.2;
+// The spec's knife edge is cut off where the lip is 0.4 mm wide (one line).
+// Stacked feet still seat on the chamfers, so this does not change the fit.
+const LIP_TIP = 0.4;
+const LIP_HEIGHT = 4.4 - LIP_TIP;
 const MAGNET_RADIUS = 3.25;
 const MAGNET_DEPTH = 2.4;
 const MAGNET_OFFSET = 13;
@@ -68,24 +77,25 @@ export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
   const depth = p.y * GRID - CLEARANCE;
   const height = p.z * HEIGHT_UNIT;
   const top = p.lip ? height + LIP_HEIGHT : height;
-  const floorZ = BASE_HEIGHT + FLOOR;
+  const floorZ = BASE_HEIGHT;
 
   const roundedRect = (w: number, d: number, r: number): CrossSection => {
     const radius = Math.max(r, 0.05);
     return CrossSection.square([w - 2 * radius, d - 2 * radius], true).offset(radius, 'Round', 2, 48);
   };
-  // All footprints share the same core rectangle, so hulls between them are
-  // exact 45° chamfers with correctly shrinking corner radii.
+  // All footprints share the same core rectangle, so a hull between two of
+  // them is an exact 45° chamfer with correctly shrinking corner radii. Hulls
+  // must only span one straight segment: the profiles are not convex overall.
   const footprint = (inset: number) => roundedRect(width - 2 * inset, depth - 2 * inset, OUTER_RADIUS - inset);
   const prism = (cs: CrossSection, z0: number, z1: number) => cs.extrude(z1 - z0).translate(0, 0, z0);
   const loft = (levels: [CrossSection, number][]): Manifold =>
     Manifold.hull(levels.flatMap(([cs, z]) => cs.toPolygons().flat().map(([x, y]): Vec3 => [x, y, z])));
 
-  const foot = loft([
-    [roundedRect(35.6, 35.6, 0.8), 0],
-    [roundedRect(37.2, 37.2, 1.6), 0.8],
-    [roundedRect(37.2, 37.2, 1.6), 2.6],
-    [roundedRect(41.5, 41.5, OUTER_RADIUS), BASE_HEIGHT],
+  const footWaist = roundedRect(37.2, 37.2, 1.6);
+  const foot = Manifold.union([
+    loft([[roundedRect(35.6, 35.6, 0.8), 0], [footWaist, 0.8]]),
+    prism(footWaist, 0.8, 2.6),
+    loft([[footWaist, 2.6], [roundedRect(41.5, 41.5, OUTER_RADIUS), BASE_PROFILE_HEIGHT]]),
   ]);
   let magnetHoles: Manifold | null = null;
   if (p.magnets) {
@@ -104,19 +114,25 @@ export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
 
   const cavities: Manifold[] = [];
   if (p.lip) {
+    const supportTop = height - LIP_SUPPORT;
+    const supportBottom = supportTop - (LIP_DEPTH - WALL);
+    // Low bins: the support would start below the floor; the trim below cuts it off.
+    if (supportBottom > floorZ) cavities.push(prism(footprint(WALL), floorZ, supportBottom));
     cavities.push(
-      prism(footprint(WALL), floorZ, height - (2.6 - WALL)),
-      loft([[footprint(WALL), height - (2.6 - WALL)], [footprint(2.6), height]]),
-      loft([[footprint(2.6), height], [footprint(0.7), height + 1.9]]),
-      prism(footprint(0.7), height + 1.9, height + 3.7),
-      loft([[footprint(0.7), height + 3.7], [footprint(0.3), height + 4.1]]),
-      prism(footprint(0.3), height + 4.1, top + 1),
+      loft([[footprint(WALL), supportBottom], [footprint(LIP_DEPTH), supportTop]]),
+      prism(footprint(LIP_DEPTH), supportTop, height),
+      loft([[footprint(LIP_DEPTH), height], [footprint(1.9), height + 0.7]]),
+      prism(footprint(1.9), height + 0.7, height + 2.5),
+      // Continue the 45° chamfer past the top so the cut is clean.
+      loft([[footprint(1.9), height + 2.5], [footprint(-0.5), height + 4.9]]),
     );
   } else {
     cavities.push(prism(footprint(WALL), floorZ, top + 1));
   }
 
-  let body = Manifold.union([...feet, prism(footprint(0), BASE_HEIGHT, top)]).subtract(Manifold.union(cavities));
+  let body = Manifold.union([...feet, prism(footprint(0), BASE_PROFILE_HEIGHT, top)]).subtract(
+    Manifold.union(cavities).trimByPlane([0, 0, 1], floorZ),
+  );
 
   let relief: Manifold | null = null;
   const label = p.label;
