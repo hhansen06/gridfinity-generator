@@ -76,6 +76,30 @@
               </div>
 
               <div class="field">
+                <span>Schraubentyp</span>
+                <select name="screwType" id="screw-type"></select>
+                <div class="screw-meta">
+                  <label class="check"><input type="checkbox" name="showNorm" id="show-norm" /> Norm als zweite Zeile</label>
+                  <button type="button" class="link" id="screw-delete" hidden>Typ löschen</button>
+                </div>
+                <details class="bulk" id="screw-save">
+                  <summary>Eigenen Schraubentyp anlegen</summary>
+                  <div class="row">
+                    <label class="field">
+                      <span>Name</span>
+                      <input type="text" id="screw-name" maxlength="60" placeholder="z. B. Gewindeformend" />
+                    </label>
+                    <label class="field">
+                      <span>Norm / Zusatz</span>
+                      <input type="text" id="screw-norm" maxlength="40" placeholder="z. B. DIN 7500" />
+                    </label>
+                  </div>
+                  <small>Übernimmt die unten gewählte Kopfform und den Antrieb. Wird im Browser gespeichert.</small>
+                  <button type="button" class="ghost wide" id="screw-save-btn">Typ speichern</button>
+                </details>
+              </div>
+
+              <div class="field">
                 <span>Kopfform <output id="head-out" class="picked"></output></span>
                 <div class="picker" id="head-picker" role="radiogroup" aria-label="Kopfform"></div>
               </div>
@@ -116,7 +140,7 @@
                   <span>Ausrichtung</span>
                   <select name="align">
                     <option value="left">Links</option>
-                    <option value="center">Mittig</option>
+                    <option value="center" selected>Mittig</option>
                   </select>
                 </label>
               </div>
@@ -138,7 +162,7 @@
               <summary>Mehrere Beschriftungen auf einmal</summary>
               <label class="field">
                 <textarea id="batch-text" rows="4" placeholder="M3 × 12&#10;M4 × 20&#10;M5 × 30|DIN 912"></textarea>
-                <small>Eine Box pro Zeile, mit Größe, Kopfform und Antrieb von oben. „|“ erzeugt einen Zeilenumbruch auf dem Etikett.</small>
+                <small>Eine Box pro Zeile, mit Größe, Schraubentyp, Kopfform und Antrieb von oben. „|“ erzeugt einen Zeilenumbruch auf dem Etikett.</small>
               </label>
               <button type="button" class="ghost wide" id="batch-add-lines">Alle hinzufügen</button>
             </details>

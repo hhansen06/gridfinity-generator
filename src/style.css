@@ -380,6 +380,18 @@ input[type='range'] {
   white-space: nowrap;
 }
 
+.screw-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.check:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .raster {
   display: flex;
   flex-direction: column;

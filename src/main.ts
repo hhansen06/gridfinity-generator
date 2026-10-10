@@ -10,6 +10,7 @@ import { Viewer } from './viewer';
 import { toBinaryStl } from './stl';
 import { toThreeMf, type Model3mf } from './threemf';
 import { DRIVES, findSymbol, HEADS, symbolToSvg, type SymbolDef } from './symbols';
+import { CUSTOM_PREFIX, loadCustomTypes, saveCustomTypes, SCREW_PRESETS, screwTypeLabel, type ScrewType } from './screws';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const form = $<HTMLFormElement>('form');
@@ -25,6 +26,12 @@ const rasterOptions = $('raster-options');
 const batchList = $<HTMLUListElement>('batch-list');
 const batchText = $<HTMLTextAreaElement>('batch-text');
 const batchDownloadBtn = $<HTMLButtonElement>('batch-download');
+const screwSelect = $<HTMLSelectElement>('screw-type');
+const showNormInput = $<HTMLInputElement>('show-norm');
+const screwDeleteBtn = $<HTMLButtonElement>('screw-delete');
+
+const escapeHtml = (s: string) =>
+  s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
 
 function buildPicker(container: HTMLElement, name: string, symbols: SymbolDef[], selected: string) {
   const none = `<label class="tile" title="Ohne"><input type="radio" name="${name}" value=""${selected ? '' : ' checked'} /><span class="none">Ohne</span></label>`;
@@ -39,6 +46,26 @@ function buildPicker(container: HTMLElement, name: string, symbols: SymbolDef[],
 }
 buildPicker($('head-picker'), 'head', HEADS, 'flat');
 buildPicker($('drive-picker'), 'drive', DRIVES, 'phillips');
+
+let customTypes = loadCustomTypes();
+const findScrewType = (id: string): ScrewType | null =>
+  [...SCREW_PRESETS, ...customTypes].find((t) => t.id === id) ?? null;
+
+function renderScrewTypes(selected: string) {
+  const options = (types: ScrewType[]) =>
+    types.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(screwTypeLabel(t))}</option>`).join('');
+  screwSelect.innerHTML =
+    '<option value="">Individuell</option>' +
+    `<optgroup label="Normteile">${options(SCREW_PRESETS)}</optgroup>` +
+    (customTypes.length ? `<optgroup label="Eigene Typen">${options(customTypes)}</optgroup>` : '');
+  screwSelect.value = findScrewType(selected) ? selected : '';
+}
+renderScrewTypes('');
+
+function setRadio(name: string, value: string) {
+  const radio = form.querySelector<HTMLInputElement>(`input[name="${name}"][value="${value}"]`);
+  if (radio) radio.checked = true;
+}
 
 const viewer = new Viewer($('viewer'));
 const mm = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 });
@@ -65,8 +92,15 @@ interface BoxConfig {
   depth: number;
   head: string;
   drive: string;
+  screwType: string;
+  // Norm of the screw type at the time the box was configured.
+  norm: string;
+  showNorm: boolean;
   logo: Shape2D | null;
 }
+
+// Text as it goes on the label, with the norm as an extra line if wanted.
+const labelText = (c: BoxConfig) => [c.text, c.showNorm ? c.norm : ''].filter(Boolean).join('\n');
 
 function readForm() {
   const data = new FormData(form);
@@ -91,6 +125,8 @@ function readForm() {
     invert: data.has('invert'),
     head: String(data.get('head') ?? ''),
     drive: String(data.get('drive') ?? ''),
+    screwType: String(data.get('screwType') ?? ''),
+    showNorm: data.has('showNorm'),
   };
 }
 type FormState = ReturnType<typeof readForm>;
@@ -108,6 +144,8 @@ function updateReadouts(s: FormState) {
   $('head-out').textContent = findSymbol(HEADS, s.head)?.name ?? 'ohne';
   $('drive-out').textContent = findSymbol(DRIVES, s.drive)?.name ?? 'ohne';
   $('label-fields').classList.toggle('disabled', !s.label);
+  showNormInput.disabled = !findScrewType(s.screwType)?.norm;
+  screwDeleteBtn.hidden = !s.screwType.startsWith(CUSTOM_PREFIX);
   rasterOptions.hidden = logo?.kind !== 'raster';
   viewer.setColors(s.bodyColor, s.reliefColor);
   document.documentElement.style.setProperty('--body-color', s.bodyColor);
@@ -124,13 +162,18 @@ function currentConfig(s: FormState): BoxConfig {
       showLogoError(err);
     }
   }
-  const { x, y, z, lip, magnets, label, text, font, textSize, relief, align, depth, head, drive } = s;
-  return { x, y, z, lip, magnets, label, text, font, textSize, relief, align, depth, head, drive, logo: logoData };
+  const { x, y, z, lip, magnets, label, text, font, textSize, relief, align, depth, head, drive, screwType, showNorm } = s;
+  const norm = findScrewType(screwType)?.norm ?? '';
+  return {
+    x, y, z, lip, magnets, label, text, font, textSize, relief, align, depth, head, drive,
+    screwType, norm, showNorm, logo: logoData,
+  };
 }
 
 async function buildConfig(m: ManifoldToplevel, c: BoxConfig): Promise<BinResult> {
   const labelActive = c.label && c.z >= 2;
-  const text = labelActive && c.text ? textToShape(await loadFont(c.font), c.text, c.align) : null;
+  const content = labelText(c);
+  const text = labelActive && content ? textToShape(await loadFont(c.font), content, c.align) : null;
   const icons: LabelIcon[] = [];
   if (labelActive) {
     if (c.logo) icons.push({ shape: c.logo, aspect: 3 });
@@ -184,7 +227,7 @@ async function generate() {
 
 let timer = 0;
 function scheduleGenerate(e?: Event) {
-  if (e?.target instanceof Element && e.target.closest('#batch')) return;
+  if (e?.target instanceof Element && e.target.closest('#batch, #screw-save')) return;
   clearTimeout(timer);
   timer = window.setTimeout(generate, 150);
 }
@@ -226,6 +269,18 @@ function clearLogo() {
   logoClear.hidden = true;
 }
 
+// Picking a screw type sets head and drive; changing either by hand leaves the type.
+form.addEventListener('change', (e) => {
+  const target = e.target as HTMLInputElement | HTMLSelectElement;
+  const type = findScrewType(screwSelect.value);
+  if (target === screwSelect && type) {
+    setRadio('head', type.head);
+    setRadio('drive', type.drive);
+  } else if ((target.name === 'head' || target.name === 'drive') && type) {
+    const s = readForm();
+    if (s.head !== type.head || s.drive !== type.drive) screwSelect.value = '';
+  }
+});
 form.addEventListener('input', scheduleGenerate);
 form.addEventListener('change', scheduleGenerate);
 form.addEventListener('submit', (e) => e.preventDefault());
@@ -303,7 +358,8 @@ let batch: ListEntry[] = loadBatch();
 function loadBatch(): ListEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as ListEntry[]) : [];
+    // Entries saved before screw types existed lack these fields.
+    return raw ? (JSON.parse(raw) as ListEntry[]).map((e) => ({ ...e, screwType: e.screwType ?? '', norm: e.norm ?? '', showNorm: e.showNorm ?? false })) : [];
   } catch {
     return [];
   }
@@ -317,10 +373,7 @@ function saveBatch() {
   }
 }
 
-const escapeHtml = (s: string) =>
-  s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
-
-const entryTitle = (e: BoxConfig) => (e.label && e.text ? e.text.replace(/\n/g, ' / ') : 'Ohne Text');
+const entryTitle = (e: BoxConfig) => (e.label && labelText(e) ? labelText(e).replace(/\n/g, ' / ') : 'Ohne Text');
 
 function renderBatch() {
   batchList.innerHTML = batch
@@ -373,10 +426,10 @@ function loadIntoForm(e: BoxConfig) {
   set('relief', e.relief);
   set('align', e.align);
   set('depth', String(e.depth));
-  for (const [name, value] of [['head', e.head], ['drive', e.drive]]) {
-    const radio = form.querySelector<HTMLInputElement>(`input[name="${name}"][value="${value}"]`);
-    if (radio) radio.checked = true;
-  }
+  setRadio('head', e.head);
+  setRadio('drive', e.drive);
+  screwSelect.value = findScrewType(e.screwType) ? e.screwType : '';
+  check('showNorm', e.showNorm);
   if (e.logo) {
     logo = { kind: 'svg', shape: e.logo };
     setLogoName('Logo aus der Liste');
@@ -415,24 +468,56 @@ batchList.addEventListener('click', (ev) => {
   }
 });
 
-// Two clicks instead of a confirm() dialog, so a stray click cannot wipe the list.
-const clearBtn = $<HTMLButtonElement>('batch-clear');
-let clearArmed = 0;
-clearBtn.addEventListener('click', () => {
-  if (!clearArmed) {
-    clearBtn.textContent = 'Wirklich leeren?';
-    clearArmed = window.setTimeout(() => {
-      clearArmed = 0;
-      clearBtn.textContent = 'Liste leeren';
-    }, 3000);
-    return;
-  }
-  clearTimeout(clearArmed);
-  clearArmed = 0;
-  clearBtn.textContent = 'Liste leeren';
+// Two clicks instead of a confirm() dialog, so a stray click cannot destroy anything.
+function onConfirmedClick(button: HTMLButtonElement, question: string, action: () => void) {
+  const label = button.textContent;
+  let armed = 0;
+  button.addEventListener('click', () => {
+    if (!armed) {
+      button.textContent = question;
+      armed = window.setTimeout(() => {
+        armed = 0;
+        button.textContent = label;
+      }, 3000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = 0;
+    button.textContent = label;
+    action();
+  });
+}
+
+onConfirmedClick($<HTMLButtonElement>('batch-clear'), 'Wirklich leeren?', () => {
   batch = [];
   saveBatch();
   renderBatch();
+});
+
+onConfirmedClick(screwDeleteBtn, 'Wirklich löschen?', () => {
+  customTypes = customTypes.filter((t) => t.id !== screwSelect.value);
+  saveCustomTypes(customTypes);
+  renderScrewTypes('');
+  scheduleGenerate();
+});
+
+$('screw-save-btn').addEventListener('click', () => {
+  const nameInput = $<HTMLInputElement>('screw-name');
+  const normInput = $<HTMLInputElement>('screw-norm');
+  const name = nameInput.value.trim();
+  if (!name) {
+    nameInput.focus();
+    return;
+  }
+  const { head, drive } = readForm();
+  const type: ScrewType = { id: CUSTOM_PREFIX + crypto.randomUUID(), name, norm: normInput.value.trim(), head, drive };
+  customTypes.push(type);
+  saveCustomTypes(customTypes);
+  renderScrewTypes(type.id);
+  nameInput.value = '';
+  normInput.value = '';
+  $<HTMLDetailsElement>('screw-save').open = false;
+  scheduleGenerate();
 });
 
 batchDownloadBtn.addEventListener('click', async () => {
