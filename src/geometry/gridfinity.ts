@@ -22,8 +22,11 @@ const MAGNET_RADIUS = 3.25;
 const MAGNET_DEPTH = 2.4;
 const MAGNET_OFFSET = 13;
 const PLATE_RADIUS = 4;
-const PLATE_PROFILE_HEIGHT = 4.65;
-const PLATE_FLOOR_BELOW_MAGNET = 0.6;
+// 4.65 mm profile plus 0.35 mm clearance below it: a bin foot reaches that far
+// past the profile, and it must rest on the chamfers, not on the floor.
+const PLATE_HEIGHT = 5;
+const PLATE_CLEARANCE = PLATE_HEIGHT - 4.65;
+const PLATE_FLOOR_BELOW_MAGNET = 1;
 const TAB_THICKNESS = 1.2;
 const RELIEF_HEIGHT = 0.5;
 const ENGRAVE_DEPTH = 0.6;
@@ -196,8 +199,9 @@ export interface BaseplateParams {
 }
 
 // Baseplate per spec: each cell is a 42 mm pocket, from the top 2.15 at 45°,
-// 1.8 vertical, 0.7 at 45° (4.65 total). Open plates are a lattice without
-// floor; with magnets a floor carries the holes below the pockets.
+// 1.8 vertical, 0.7 at 45°, then 0.35 vertical clearance (5 total). Open
+// plates are a lattice without floor; with magnets a floor carries the holes
+// below the pockets.
 export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinResult {
   const { Manifold } = wasm;
   const { roundedRect, prism, loft } = shapes(wasm);
@@ -205,20 +209,22 @@ export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinR
   const width = p.x * GRID + left + right;
   const depth = p.y * GRID + front + back;
   const floor = p.magnets ? MAGNET_DEPTH + PLATE_FLOOR_BELOW_MAGNET : 0;
-  const top = floor + PLATE_PROFILE_HEIGHT;
+  const top = floor + PLATE_HEIGHT;
+  const z0 = floor + PLATE_CLEARANCE;
 
   const cell = (inset: number) => roundedRect(GRID - 2 * inset, GRID - 2 * inset, PLATE_RADIUS - inset);
-  const parts = [
-    loft([[cell(2.85), floor], [cell(2.15), floor + 0.7]]),
-    prism(cell(2.15), floor + 0.7, floor + 2.5),
+  const pocket = Manifold.union([
+    // Open plates have no floor, so the clearance cut runs through the bottom.
+    prism(cell(2.85), p.magnets ? floor : -1, z0),
+    loft([[cell(2.85), z0], [cell(2.15), z0 + 0.7]]),
+    prism(cell(2.15), z0 + 0.7, z0 + 2.5),
     // Continue the 45° chamfer past the top so the cut is clean.
-    loft([[cell(2.15), floor + 2.5], [cell(-0.5), top + 0.5]]),
-  ];
-  if (!p.magnets) parts.push(prism(cell(2.85), -1, floor));
-  let pocket = Manifold.union(parts);
+    loft([[cell(2.15), z0 + 2.5], [cell(-0.5), top + 0.5]]),
+  ]);
+  let cutter = pocket;
   if (p.magnets) {
     const hole = Manifold.cylinder(MAGNET_DEPTH + 0.01, MAGNET_RADIUS, MAGNET_RADIUS, 32);
-    pocket = pocket.add(
+    cutter = cutter.add(
       Manifold.union(
         [-1, 1].flatMap((sx) =>
           [-1, 1].map((sy) => hole.translate(sx * MAGNET_OFFSET, sy * MAGNET_OFFSET, floor - MAGNET_DEPTH)),
@@ -233,7 +239,7 @@ export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinR
   const pockets: Manifold[] = [];
   for (let i = 0; i < p.x; i++) {
     for (let j = 0; j < p.y; j++) {
-      pockets.push(pocket.translate(cx + (i - (p.x - 1) / 2) * GRID, cy + (j - (p.y - 1) / 2) * GRID, 0));
+      pockets.push(cutter.translate(cx + (i - (p.x - 1) / 2) * GRID, cy + (j - (p.y - 1) / 2) * GRID, 0));
     }
   }
   const body = prism(roundedRect(width, depth, PLATE_RADIUS), 0, top).subtract(Manifold.union(pockets));
