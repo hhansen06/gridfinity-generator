@@ -1,12 +1,13 @@
 # Gridfinity Generator
 
-Webbasierter Generator für [Gridfinity](https://gridfinity.xyz)-Boxen. Läuft komplett im Browser – kein Backend, kein Login.
+Webbasierter Generator für [Gridfinity](https://gridfinity.xyz)-Boxen und Baseplates. Läuft komplett im Browser – kein Backend, kein Login.
 
 - Größe in Rastereinheiten: X/Y (42 mm), Z (7 mm)
 - Stapelrand und Magnetlöcher (6×2 mm) optional
 - Schraubentypen nach Norm (ISO/DIN) setzen Kopfform und Antrieb auf einmal, Norm optional als zweite Etikettzeile; eigene Typen lassen sich im Browser speichern
 - Beschriftungslasche mit Text (mehrzeilig, 4 Schriftarten), Schraubensymbolen (10 Kopfformen, 13 Antriebe) und eigenem Logo (SVG, PNG, JPG), erhaben, graviert oder bündig eingelegt
 - 3D-Vorschau, Download als STL oder als 3MF mit Farben (Box und Schrift als getrennte Teile, in Bambu Studio/OrcaSlicer direkt Filament 1 und 2 zugeordnet)
+- Baseplates für eine Schublade: Innenmaß, Spiel und Druckbettgröße angeben – daraus entstehen Raster, massiver Randausgleich (beidseitig oder einseitig) und eine Aufteilung in druckbare Platten mit möglichst wenigen Varianten; offen oder mit Boden und Magnetlöchern, Download als STL (ZIP pro Variante) oder 3MF mit allen Platten
 - Stapelliste: mehrere Boxen sammeln (auch zeilenweise per Textfeld) und zusammen als eine 3MF-Datei herunterladen
 
 ## Entwicklung
@@ -33,7 +34,8 @@ Hosting auf AWS (S3 + CloudFront, Deployment per GitHub Actions): siehe [`infra/
 
 | Datei | Inhalt |
 | --- | --- |
-| `src/geometry/gridfinity.ts` | Box-Geometrie nach Gridfinity-Spezifikation (manifold-3d) |
+| `src/geometry/gridfinity.ts` | Box- und Baseplate-Geometrie nach Gridfinity-Spezifikation (manifold-3d) |
+| `src/baseplates.ts` | Schublade → Raster, Randausgleich und Aufteilung in Platten |
 | `src/geometry/text.ts` | Text → Polygone (opentype.js) |
 | `src/logo.ts` | SVG- und Rasterlogo → Polygone |
 | `src/symbols.ts` | Vordefinierte Symbole (Kopfformen, Antriebe) |

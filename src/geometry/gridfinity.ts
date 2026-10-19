@@ -21,6 +21,9 @@ const LIP_HEIGHT = 4.4 - LIP_TIP;
 const MAGNET_RADIUS = 3.25;
 const MAGNET_DEPTH = 2.4;
 const MAGNET_OFFSET = 13;
+const PLATE_RADIUS = 4;
+const PLATE_PROFILE_HEIGHT = 4.65;
+const PLATE_FLOOR_BELOW_MAGNET = 0.6;
 const TAB_THICKNESS = 1.2;
 const RELIEF_HEIGHT = 0.5;
 const ENGRAVE_DEPTH = 0.6;
@@ -71,25 +74,31 @@ export interface BinResult {
   size: Vec3;
 }
 
-export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
+function shapes(wasm: ManifoldToplevel) {
   const { Manifold, CrossSection } = wasm;
+  const roundedRect = (w: number, d: number, r: number): CrossSection => {
+    const radius = Math.max(r, 0.05);
+    return CrossSection.square([w - 2 * radius, d - 2 * radius], true).offset(radius, 'Round', 2, 48);
+  };
+  const prism = (cs: CrossSection, z0: number, z1: number) => cs.extrude(z1 - z0).translate(0, 0, z0);
+  // Footprints passed to one loft must share the same core rectangle, so the
+  // hull is an exact 45° chamfer with correctly shrinking corner radii. Hulls
+  // must only span one straight segment: the profiles are not convex overall.
+  const loft = (levels: [CrossSection, number][]): Manifold =>
+    Manifold.hull(levels.flatMap(([cs, z]) => cs.toPolygons().flat().map(([x, y]): Vec3 => [x, y, z])));
+  return { roundedRect, prism, loft };
+}
+
+export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
+  const { Manifold } = wasm;
   const width = p.x * GRID - CLEARANCE;
   const depth = p.y * GRID - CLEARANCE;
   const height = p.z * HEIGHT_UNIT;
   const top = p.lip ? height + LIP_HEIGHT : height;
   const floorZ = BASE_HEIGHT;
 
-  const roundedRect = (w: number, d: number, r: number): CrossSection => {
-    const radius = Math.max(r, 0.05);
-    return CrossSection.square([w - 2 * radius, d - 2 * radius], true).offset(radius, 'Round', 2, 48);
-  };
-  // All footprints share the same core rectangle, so a hull between two of
-  // them is an exact 45° chamfer with correctly shrinking corner radii. Hulls
-  // must only span one straight segment: the profiles are not convex overall.
+  const { roundedRect, prism, loft } = shapes(wasm);
   const footprint = (inset: number) => roundedRect(width - 2 * inset, depth - 2 * inset, OUTER_RADIUS - inset);
-  const prism = (cs: CrossSection, z0: number, z1: number) => cs.extrude(z1 - z0).translate(0, 0, z0);
-  const loft = (levels: [CrossSection, number][]): Manifold =>
-    Manifold.hull(levels.flatMap(([cs, z]) => cs.toPolygons().flat().map(([x, y]): Vec3 => [x, y, z])));
 
   const footWaist = roundedRect(37.2, 37.2, 1.6);
   const foot = Manifold.union([
@@ -176,6 +185,59 @@ export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
     relief: relief && !relief.isEmpty() ? toMeshData(relief) : null,
     size: [width, depth, top],
   };
+}
+
+export interface BaseplateParams {
+  x: number;
+  y: number;
+  // Solid border added outside the grid to fill the drawer, in mm.
+  pad: { left: number; right: number; front: number; back: number };
+  magnets: boolean;
+}
+
+// Baseplate per spec: each cell is a 42 mm pocket, from the top 2.15 at 45°,
+// 1.8 vertical, 0.7 at 45° (4.65 total). Open plates are a lattice without
+// floor; with magnets a floor carries the holes below the pockets.
+export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinResult {
+  const { Manifold } = wasm;
+  const { roundedRect, prism, loft } = shapes(wasm);
+  const { left, right, front, back } = p.pad;
+  const width = p.x * GRID + left + right;
+  const depth = p.y * GRID + front + back;
+  const floor = p.magnets ? MAGNET_DEPTH + PLATE_FLOOR_BELOW_MAGNET : 0;
+  const top = floor + PLATE_PROFILE_HEIGHT;
+
+  const cell = (inset: number) => roundedRect(GRID - 2 * inset, GRID - 2 * inset, PLATE_RADIUS - inset);
+  const parts = [
+    loft([[cell(2.85), floor], [cell(2.15), floor + 0.7]]),
+    prism(cell(2.15), floor + 0.7, floor + 2.5),
+    // Continue the 45° chamfer past the top so the cut is clean.
+    loft([[cell(2.15), floor + 2.5], [cell(-0.5), top + 0.5]]),
+  ];
+  if (!p.magnets) parts.push(prism(cell(2.85), -1, floor));
+  let pocket = Manifold.union(parts);
+  if (p.magnets) {
+    const hole = Manifold.cylinder(MAGNET_DEPTH + 0.01, MAGNET_RADIUS, MAGNET_RADIUS, 32);
+    pocket = pocket.add(
+      Manifold.union(
+        [-1, 1].flatMap((sx) =>
+          [-1, 1].map((sy) => hole.translate(sx * MAGNET_OFFSET, sy * MAGNET_OFFSET, floor - MAGNET_DEPTH)),
+        ),
+      ),
+    );
+  }
+
+  // Cells are centered within the grid area, which is shifted by the padding.
+  const cx = (left - right) / 2;
+  const cy = (front - back) / 2;
+  const pockets: Manifold[] = [];
+  for (let i = 0; i < p.x; i++) {
+    for (let j = 0; j < p.y; j++) {
+      pockets.push(pocket.translate(cx + (i - (p.x - 1) / 2) * GRID, cy + (j - (p.y - 1) / 2) * GRID, 0));
+    }
+  }
+  const body = prism(roundedRect(width, depth, PLATE_RADIUS), 0, top).subtract(Manifold.union(pockets));
+  return { body: toMeshData(body), relief: null, size: [width, depth, top] };
 }
 
 interface Box2D {

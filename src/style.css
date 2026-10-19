@@ -121,6 +121,77 @@ h2 {
   gap: 10px;
 }
 
+.dims.two {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.spaced {
+  margin-top: 12px;
+}
+
+body[data-mode='box'] .mode-plate,
+body[data-mode='plate'] .mode-box {
+  display: none !important;
+}
+
+.modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  margin-top: 6px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.modes input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.modes span {
+  display: block;
+  padding: 7px;
+  text-align: center;
+  font-weight: 600;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.modes label:has(input:checked) span {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+
+.modes label:has(input:focus-visible) span {
+  outline: 2px solid var(--accent);
+}
+
+.entry-text small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.plate-name {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 12px;
+  border-radius: 4px;
+  background: var(--body-color, #9aa3ad);
+  color: #fff;
+}
+
 .dim {
   display: flex;
   flex-direction: column;
@@ -508,6 +579,19 @@ button.primary:disabled {
 
 .sw.relief {
   background: var(--relief-color, #f28c28);
+}
+
+.sw.plate-a {
+  background: #ffd400;
+  margin-right: 2px;
+}
+
+.sw.plate-b {
+  background: #e8212b;
+}
+
+.sw.outline {
+  border: 2px solid var(--relief-color, #f28c28);
 }
 
 .colors {

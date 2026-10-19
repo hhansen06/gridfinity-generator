@@ -3,20 +3,68 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Gridfinity-Boxen im Browser konfigurieren und als STL herunterladen – mit Beschriftung und Logo." />
+    <meta name="description" content="Gridfinity-Boxen und Baseplates im Browser konfigurieren und als STL herunterladen – mit Beschriftung und Logo." />
     <title>Gridfinity Generator</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='12' height='12' rx='2' fill='%23f28c28'/%3E%3Crect x='17' y='3' width='12' height='12' rx='2' fill='%239aa3ad'/%3E%3Crect x='3' y='17' width='12' height='12' rx='2' fill='%239aa3ad'/%3E%3Crect x='17' y='17' width='12' height='12' rx='2' fill='%239aa3ad'/%3E%3C/svg%3E" />
   </head>
-  <body>
+  <body data-mode="box">
     <div class="app">
       <aside class="panel">
         <header class="brand">
           <h1>Gridfinity Generator</h1>
-          <p>Box konfigurieren, Beschriftung gestalten, als STL oder 3MF herunterladen.</p>
+          <p>Boxen und passende Baseplates für deine Schublade erzeugen, als STL oder 3MF herunterladen.</p>
         </header>
 
         <form id="form" autocomplete="off">
-          <section>
+          <div class="modes" role="radiogroup" aria-label="Was erzeugen?">
+            <label><input type="radio" name="mode" value="box" checked /><span>Box</span></label>
+            <label><input type="radio" name="mode" value="plate" /><span>Baseplate</span></label>
+          </div>
+
+          <section class="mode-plate">
+            <h2>Schublade (Innenmaß)</h2>
+            <div class="dims two">
+              <label class="dim">
+                <span>Breite</span>
+                <input type="number" name="drawerW" min="43" max="3000" step="1" value="400" />
+                <small>mm</small>
+              </label>
+              <label class="dim">
+                <span>Tiefe</span>
+                <input type="number" name="drawerD" min="43" max="3000" step="1" value="300" />
+                <small>mm</small>
+              </label>
+            </div>
+            <div class="row spaced">
+              <label class="field">
+                <span>Spiel (mm)</span>
+                <input type="number" name="clearance" min="0" max="10" step="0.5" value="1" />
+                <small>Gesamt je Richtung</small>
+              </label>
+              <label class="field">
+                <span>Druckbett (mm)</span>
+                <input type="number" name="bed" min="60" max="1000" step="1" value="256" />
+                <small>Kürzere Seite</small>
+              </label>
+            </div>
+            <label class="field spaced">
+              <span>Rest auffüllen</span>
+              <select name="padMode">
+                <option value="center" selected>Beidseitig (Raster mittig)</option>
+                <option value="start">Nur links und vorne</option>
+                <option value="none">Nicht auffüllen</option>
+              </select>
+              <small>Massiver Rand an den äußeren Platten, damit nichts in der Schublade verrutscht.</small>
+            </label>
+            <label class="check"><input type="checkbox" name="plateMagnets" /> Magnetlöcher (6×2 mm, mit Boden)</label>
+          </section>
+
+          <section class="mode-plate">
+            <h2>Platten <output id="plate-count" class="badge"></output></h2>
+            <ul class="batch-list" id="plate-list"></ul>
+          </section>
+
+          <section class="mode-box">
             <h2>Größe</h2>
             <div class="dims">
               <label class="dim">
@@ -40,15 +88,15 @@
 
           <section>
             <h2>Optionen</h2>
-            <label class="check"><input type="checkbox" name="lip" checked /> Stapelrand</label>
-            <label class="check"><input type="checkbox" name="magnets" /> Magnetlöcher (6×2 mm)</label>
+            <label class="check mode-box"><input type="checkbox" name="lip" checked /> Stapelrand</label>
+            <label class="check mode-box"><input type="checkbox" name="magnets" /> Magnetlöcher (6×2 mm)</label>
             <div class="colors">
-              <label class="color"><input type="color" name="bodyColor" value="#9aa3ad" /> Farbe Box</label>
-              <label class="color"><input type="color" name="reliefColor" value="#f28c28" /> Farbe Schrift</label>
+              <label class="color"><input type="color" name="bodyColor" value="#9aa3ad" /> <span>Farbe <span class="mode-box">Box</span><span class="mode-plate">Platten</span></span></label>
+              <label class="color mode-box"><input type="color" name="reliefColor" value="#f28c28" /> Farbe Schrift</label>
             </div>
           </section>
 
-          <section>
+          <section class="mode-box">
             <div class="section-head">
               <h2>Beschriftung</h2>
               <label class="switch"><input type="checkbox" name="label" checked /><span></span></label>
@@ -151,7 +199,7 @@
             </div>
           </section>
 
-          <section id="batch">
+          <section id="batch" class="mode-box">
             <div class="section-head">
               <h2>Stapelliste <output id="batch-count" class="badge"></output></h2>
               <button type="button" class="link" id="batch-clear" hidden>Liste leeren</button>
@@ -177,15 +225,17 @@
             <button type="button" id="download" class="primary" disabled>STL</button>
             <button type="button" id="download-3mf" class="primary" disabled title="Box und Schrift als getrennte Teile mit Farben">3MF mit Farben</button>
           </div>
-          <button type="button" id="batch-download" class="secondary" hidden></button>
+          <button type="button" id="batch-download" class="secondary mode-box" hidden></button>
         </footer>
       </aside>
 
       <main class="stage">
         <div id="viewer" class="viewer"></div>
         <div class="legend">
-          <span><i class="sw body"></i>Box</span>
-          <span><i class="sw relief"></i>Beschriftung</span>
+          <span class="mode-box"><i class="sw body"></i>Box</span>
+          <span class="mode-box"><i class="sw relief"></i>Beschriftung</span>
+          <span class="mode-plate"><i class="sw plate-a"></i><i class="sw plate-b"></i>Platten (abwechselnd)</span>
+          <span class="mode-plate"><i class="sw outline"></i>Schublade</span>
           <span class="muted">Ziehen: drehen · Scrollen: zoomen · Rechtsklick: verschieben</span>
         </div>
         <div id="status" class="status" hidden></div>

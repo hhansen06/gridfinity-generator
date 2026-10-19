@@ -2,7 +2,17 @@ import './style.css';
 import type { ManifoldToplevel } from 'manifold-3d';
 import { loadManifold } from './geometry/manifold';
 import { collectGarbage } from './geometry/gc';
-import { buildBin, GRID, HEIGHT_UNIT, type BinResult, type LabelIcon, type Shape2D } from './geometry/gridfinity';
+import { strToU8, zipSync } from 'fflate';
+import {
+  buildBaseplate,
+  buildBin,
+  GRID,
+  HEIGHT_UNIT,
+  type BinResult,
+  type LabelIcon,
+  type Shape2D,
+} from './geometry/gridfinity';
+import { layoutDrawer, type DrawerLayout, type PadMode, type PlateType } from './baseplates';
 import { textToShape } from './geometry/text';
 import { loadFont } from './fonts';
 import { loadImage, rasterToShape, svgToShape } from './logo';
@@ -29,6 +39,7 @@ const batchDownloadBtn = $<HTMLButtonElement>('batch-download');
 const screwSelect = $<HTMLSelectElement>('screw-type');
 const showNormInput = $<HTMLInputElement>('show-norm');
 const screwDeleteBtn = $<HTMLButtonElement>('screw-delete');
+const plateList = $<HTMLUListElement>('plate-list');
 
 const escapeHtml = (s: string) =>
   s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
@@ -74,6 +85,7 @@ type Logo = { kind: 'svg'; shape: Shape2D } | { kind: 'raster'; image: HTMLImage
 let logo: Logo | null = null;
 let wasm: ManifoldToplevel | null = null;
 let lastResult: BinResult | null = null;
+let lastPlates: { layout: DrawerLayout; meshes: Map<string, BinResult>; name: string } | null = null;
 let generation = 0;
 
 // Everything needed to rebuild one box; plain data so it can be stored.
@@ -107,6 +119,13 @@ function readForm() {
   const num = (name: string, min: number, max: number) =>
     Math.min(max, Math.max(min, Math.round(Number(data.get(name)) || min)));
   return {
+    mode: data.get('mode') === 'plate' ? ('plate' as const) : ('box' as const),
+    drawerW: Number(data.get('drawerW')) || 0,
+    drawerD: Number(data.get('drawerD')) || 0,
+    clearance: Math.max(0, Number(data.get('clearance')) || 0),
+    bed: Math.max(60, Number(data.get('bed')) || 0),
+    padMode: data.get('padMode') as PadMode,
+    plateMagnets: data.has('plateMagnets'),
     x: num('x', 1, 10),
     y: num('y', 1, 10),
     z: num('z', 1, 25),
@@ -139,6 +158,10 @@ function updateReadouts(s: FormState) {
   set('x', `${mm.format(s.x * GRID - 0.5)} mm`);
   set('y', `${mm.format(s.y * GRID - 0.5)} mm`);
   set('z', `${mm.format(s.z * HEIGHT_UNIT)} mm`);
+  document.body.dataset.mode = s.mode;
+  if (s.mode === 'box') downloadBtn.textContent = 'STL';
+  download3mfBtn.textContent = s.mode === 'plate' ? '3MF' : '3MF mit Farben';
+  download3mfBtn.title = s.mode === 'plate' ? 'Alle Platten in einer Datei' : 'Box und Schrift als getrennte Teile mit Farben';
   $('threshold-out').textContent = String(s.threshold);
   $('depth-out').textContent = mm.format(s.depth);
   $('head-out').textContent = findSymbol(HEADS, s.head)?.name ?? 'ohne';
@@ -202,6 +225,7 @@ async function generate() {
   if (!wasm) return;
 
   const started = performance.now();
+  if (s.mode === 'plate') return generatePlates(s, run, started);
   let result: BinResult;
   try {
     result = await buildConfig(wasm, currentConfig(s));
@@ -212,6 +236,7 @@ async function generate() {
   }
   if (run !== generation) return;
   lastResult = result;
+  lastPlates = null;
   setStatus(null);
   viewer.show(result, s.x, s.y);
 
@@ -225,9 +250,137 @@ async function generate() {
   download3mfBtn.disabled = false;
 }
 
+// ---------- Baseplates für eine Schublade ----------
+
+const plateCache = new Map<string, BinResult>();
+
+function plateKey(t: PlateType) {
+  return JSON.stringify([t.x, t.y, t.pad, t.magnets]);
+}
+
+function buildPlate(m: ManifoldToplevel, t: PlateType): BinResult {
+  const key = plateKey(t);
+  let result = plateCache.get(key);
+  if (!result) {
+    try {
+      result = buildBaseplate(m, { x: t.x, y: t.y, pad: t.pad, magnets: t.magnets });
+    } finally {
+      collectGarbage();
+    }
+    if (plateCache.size > 40) plateCache.clear();
+    plateCache.set(key, result);
+  }
+  return result;
+}
+
+const plateTitle = (t: PlateType) => `Platte ${t.name} (${t.x}×${t.y})`;
+
+function renderPlates(layout: DrawerLayout | null) {
+  const plates = layout?.plates ?? [];
+  plateList.innerHTML = plates
+    .map((t) => {
+      const padded = Object.values(t.pad).some((v) => v > 0) ? ' + Rand' : '';
+      return `<li>
+        <span class="entry">
+          <span class="plate-name">${t.name}</span>
+          <span class="entry-text">${t.x}×${t.y} Felder${padded}<small>${mm.format(t.size[0])} × ${mm.format(t.size[1])} mm</small></span>
+          <span class="entry-size">${t.positions.length}×</span>
+        </span>
+        <button type="button" class="icon" data-plate="${t.name}" title="${plateTitle(t)} als STL">STL</button>
+      </li>`;
+    })
+    .join('');
+  $('plate-count').textContent = layout ? String(layout.count) : '';
+}
+
+async function generatePlates(s: FormState, run: number, started: number) {
+  const layout = layoutDrawer({
+    width: s.drawerW,
+    depth: s.drawerD,
+    clearance: s.clearance,
+    bed: s.bed,
+    pad: s.padMode,
+    magnets: s.plateMagnets,
+  });
+  if (typeof layout === 'string') {
+    lastPlates = null;
+    renderPlates(null);
+    setStatus(layout);
+    statsEl.textContent = '';
+    downloadBtn.disabled = download3mfBtn.disabled = true;
+    return;
+  }
+
+  const meshes = new Map<string, BinResult>();
+  try {
+    for (const t of layout.plates) meshes.set(t.name, buildPlate(wasm!, t));
+  } catch (err) {
+    console.error(err);
+    setStatus('Die Geometrie konnte nicht erzeugt werden. Bitte Eingaben prüfen.');
+    return;
+  }
+  if (run !== generation) return;
+  lastResult = null;
+  lastPlates = { layout, meshes, name: `baseplate_${mm.format(s.drawerW)}x${mm.format(s.drawerD)}` };
+  setStatus(null);
+  renderPlates(layout);
+  const height = [...meshes.values()][0].size[2];
+  viewer.showPlates(
+    layout.plates.flatMap((t) => t.positions.map((p) => ({ mesh: meshes.get(t.name)!.body, ...p }))),
+    [s.drawerW, s.drawerD],
+    height,
+  );
+
+  const n = layout.count;
+  const types = layout.plates.length;
+  statsEl.innerHTML =
+    `<strong>${layout.cellsX} × ${layout.cellsY} Felder · ${n} ${n === 1 ? 'Platte' : 'Platten'}` +
+    (types > 1 ? ` in ${types} Varianten` : '') +
+    '</strong>' +
+    `<br>Luft zur Schublade: ${mm.format(layout.gapX)} × ${mm.format(layout.gapY)} mm · ` +
+    `${height.toLocaleString('de-DE', { maximumFractionDigits: 2 })} mm hoch · ${Math.round(performance.now() - started)} ms`;
+  downloadBtn.textContent = types > 1 ? 'STL (ZIP)' : 'STL';
+  downloadBtn.disabled = download3mfBtn.disabled = false;
+}
+
+const plateModel = (t: PlateType, result: BinResult): Model3mf => ({
+  name: plateTitle(t),
+  parts: [{ name: 'Baseplate', mesh: result.body, color: 0 }],
+  size: [result.size[0], result.size[1]],
+});
+
+const plateFileName = (t: PlateType) => `baseplate_${t.name}_${t.x}x${t.y}_${t.positions.length}x.stl`;
+
+plateList.addEventListener('click', (ev) => {
+  const name = (ev.target as Element).closest<HTMLButtonElement>('button[data-plate]')?.dataset.plate;
+  const type = lastPlates?.layout.plates.find((t) => t.name === name);
+  if (!lastPlates || !type) return;
+  saveFile(toBinaryStl([lastPlates.meshes.get(type.name)!.body]), plateFileName(type));
+});
+
+// One STL per plate variant; several variants go into a ZIP.
+async function downloadPlatesStl() {
+  if (!lastPlates) return;
+  const { layout, meshes, name } = lastPlates;
+  if (layout.plates.length === 1) {
+    const t = layout.plates[0];
+    saveFile(toBinaryStl([meshes.get(t.name)!.body]), plateFileName(t));
+    return;
+  }
+  const files: Record<string, Uint8Array> = {};
+  for (const t of layout.plates) {
+    files[plateFileName(t)] = new Uint8Array(await toBinaryStl([meshes.get(t.name)!.body]).arrayBuffer());
+  }
+  const readme = layout.plates.map((t) => `${plateTitle(t)}: ${t.positions.length}× drucken`).join('\n');
+  files['LIESMICH.txt'] = strToU8(`Schublade ${name.replace('baseplate_', '')} mm\n\n${readme}\n`);
+  saveFile(new Blob([zipSync(files)], { type: 'application/zip' }), `${name}.zip`);
+}
+
 let timer = 0;
 function scheduleGenerate(e?: Event) {
   if (e?.target instanceof Element && e.target.closest('#batch, #screw-save')) return;
+  // Readouts (and the mode switch) react at once; only the geometry waits.
+  updateReadouts(readForm());
   clearTimeout(timer);
   timer = window.setTimeout(generate, 150);
 }
@@ -334,14 +487,25 @@ function toModel(name: string, result: BinResult): Model3mf {
 const palette = (s: FormState) => [s.bodyColor, s.reliefColor];
 
 downloadBtn.addEventListener('click', () => {
+  if (readForm().mode === 'plate') {
+    downloadPlatesStl();
+    return;
+  }
   if (!lastResult) return;
   const meshes = lastResult.relief ? [lastResult.body, lastResult.relief] : [lastResult.body];
   saveFile(toBinaryStl(meshes), `${fileBaseName(currentConfig(readForm()))}.stl`);
 });
 
 download3mfBtn.addEventListener('click', () => {
-  if (!lastResult) return;
   const s = readForm();
+  if (s.mode === 'plate') {
+    if (!lastPlates) return;
+    const { layout, meshes, name } = lastPlates;
+    const models = layout.plates.flatMap((t) => t.positions.map(() => plateModel(t, meshes.get(t.name)!)));
+    saveFile(toThreeMf(models, [s.bodyColor]), `${name}.3mf`);
+    return;
+  }
+  if (!lastResult) return;
   const name = fileBaseName(currentConfig(s));
   saveFile(toThreeMf([toModel(name, lastResult)], palette(s)), `${name}.3mf`);
 });

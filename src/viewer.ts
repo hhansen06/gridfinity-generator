@@ -12,6 +12,11 @@ export class Viewer {
   private grid: THREE.GridHelper | null = null;
   private bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.55, metalness: 0.05 });
   private reliefMaterial = new THREE.MeshStandardMaterial({ color: 0xf28c28, roughness: 0.5 });
+  // Neighboring baseplates alternate in loud colors so each plate stands out.
+  private plateMaterials = [0xffd400, 0xe8212b].map(
+    (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05 }),
+  );
+  private outlineMaterial = new THREE.LineBasicMaterial({ color: 0xf28c28 });
   private lastSize = '';
 
   constructor(private container: HTMLElement) {
@@ -43,13 +48,18 @@ export class Viewer {
   setColors(body: string, relief: string): void {
     this.bodyMaterial.color.set(body);
     this.reliefMaterial.color.set(relief);
+    this.outlineMaterial.color.set(relief);
   }
 
-  show(result: BinResult, gridX: number, gridY: number): void {
+  private clear(): void {
     for (const child of [...this.group.children]) {
       (child as THREE.Mesh).geometry.dispose();
       this.group.remove(child);
     }
+  }
+
+  show(result: BinResult, gridX: number, gridY: number): void {
+    this.clear();
     this.group.add(new THREE.Mesh(toGeometry(result.body), this.bodyMaterial));
     if (result.relief) this.group.add(new THREE.Mesh(toGeometry(result.relief), this.reliefMaterial));
 
@@ -57,6 +67,28 @@ export class Viewer {
     const sizeKey = `${gridX}x${gridY}x${h}`;
     if (sizeKey !== this.lastSize) {
       this.updateGrid(gridX, gridY);
+      this.frame(w, d, h);
+      this.lastSize = sizeKey;
+    }
+  }
+
+  // Plates are placed at their drawer positions; the drawer is drawn as an outline.
+  showPlates(plates: { mesh: MeshData; x: number; y: number; alt: boolean }[], drawer: [number, number], h: number): void {
+    this.clear();
+    for (const p of plates) {
+      const mesh = new THREE.Mesh(toGeometry(p.mesh), this.plateMaterials[Number(p.alt)]);
+      mesh.position.set(p.x, p.y, 0);
+      this.group.add(mesh);
+    }
+    const [w, d] = drawer;
+    const outline = new THREE.BufferGeometry().setFromPoints(
+      [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]].map(([x, y]) => new THREE.Vector3(x, y, 0.05)),
+    );
+    this.group.add(new THREE.LineLoop(outline, this.outlineMaterial));
+
+    const sizeKey = `drawer:${w}x${d}x${h}`;
+    if (sizeKey !== this.lastSize) {
+      this.removeGrid();
       this.frame(w, d, h);
       this.lastSize = sizeKey;
     }
@@ -72,11 +104,15 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
   }
 
+  private removeGrid(): void {
+    if (!this.grid) return;
+    this.grid.geometry.dispose();
+    this.scene.remove(this.grid);
+    this.grid = null;
+  }
+
   private updateGrid(gridX: number, gridY: number): void {
-    if (this.grid) {
-      this.grid.geometry.dispose();
-      this.scene.remove(this.grid);
-    }
+    this.removeGrid();
     const n = Math.max(gridX, gridY) + 4;
     const color = getComputedStyle(document.documentElement).getPropertyValue('--grid').trim() || '#c8cdd3';
     this.grid = new THREE.GridHelper(n * GRID, n, color, color);
