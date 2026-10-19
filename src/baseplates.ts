@@ -1,6 +1,6 @@
 import { GRID } from './geometry/gridfinity';
 
-export type PadMode = 'none' | 'center' | 'start';
+export type PadMode = 'none' | 'center' | 'start' | 'sides-back';
 
 export interface DrawerParams {
   // Inner drawer size in mm.
@@ -74,9 +74,22 @@ const variants = (pieces: AxisPiece[]) => new Set(pieces.map((p) => JSON.stringi
 // 0 for inner pieces, 1 for one end, 2 for a single piece touching both.
 const edgeness = (i: number, k: number) => Number(i === 0) + Number(i === k - 1);
 
-function pads(free: number, mode: PadMode): [number, number] {
+type AxisPad = 'none' | 'both' | 'start' | 'end';
+
+// Per axis [x, y]; x runs left to right, y front to back.
+const AXIS_PADS: Record<PadMode, [AxisPad, AxisPad]> = {
+  none: ['none', 'none'],
+  center: ['both', 'both'],
+  start: ['start', 'start'],
+  'sides-back': ['both', 'end'],
+};
+
+function pads(free: number, mode: AxisPad): [number, number] {
   if (mode === 'none') return [0, 0];
-  if (mode === 'start') return free >= MIN_PAD ? [round(free), 0] : [0, 0];
+  if (mode !== 'both') {
+    if (free < MIN_PAD) return [0, 0];
+    return mode === 'start' ? [round(free), 0] : [0, round(free)];
+  }
   const half = free / 2;
   return half >= MIN_PAD ? [round(half), round(half)] : [0, 0];
 }
@@ -88,8 +101,9 @@ export function layoutDrawer(d: DrawerParams): DrawerLayout | string {
   const cellsY = Math.floor(usableY / GRID);
   if (cellsX < 1 || cellsY < 1) return `Die Schublade muss mindestens ${GRID + d.clearance} mm in jeder Richtung messen.`;
 
-  const [left, right] = pads(usableX - cellsX * GRID, d.pad);
-  const [front, back] = pads(usableY - cellsY * GRID, d.pad);
+  const [padX, padY] = AXIS_PADS[d.pad];
+  const [left, right] = pads(usableX - cellsX * GRID, padX);
+  const [front, back] = pads(usableY - cellsY * GRID, padY);
   const piecesX = splitAxis(cellsX, left, right, d.bed);
   const piecesY = splitAxis(cellsY, front, back, d.bed);
   if (!piecesX || !piecesY) return 'Das Druckbett ist zu klein für eine einzelne Rasterzelle mit Rand.';
