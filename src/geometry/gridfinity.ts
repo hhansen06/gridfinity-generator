@@ -30,6 +30,20 @@ const PLATE_FLOOR_BELOW_MAGNET = 1;
 const TAB_THICKNESS = 1.2;
 const RELIEF_HEIGHT = 0.5;
 const ENGRAVE_DEPTH = 0.6;
+// Drawer size engraved into the baseplate padding.
+const PAD_TEXT_MARGIN = 0.8;
+const PAD_TEXT_MAX = 6;
+const PAD_TEXT_MIN = 2.5;
+// Neighbor marks on the baseplate bottom. Open plates only have the 2.85 mm
+// rim between pocket and edge; plates with magnets have a full floor.
+const BOTTOM_MARK_DEPTH = 0.4;
+const BOTTOM_MARK_OPEN = { height: 2, inset: 2.85 / 2 };
+const BOTTOM_MARK_FLOOR = { height: 4, inset: 3 };
+const BOTTOM_MARK_MAX_LENGTH = 20;
+// Plate name in the middle of the bottom. Open plates carry it on the 5.7 mm
+// wall between the pockets, plates with magnets on their floor.
+const BOTTOM_NAME_OPEN = 4.5;
+const BOTTOM_NAME_FLOOR = 10;
 const LABEL_MARGIN = 1;
 const ICON_GAP = 1.5;
 // With text present, icons may take at most this share of the label width.
@@ -196,6 +210,12 @@ export interface BaseplateParams {
   // Solid border added outside the grid to fill the drawer, in mm.
   pad: { left: number; right: number; front: number; back: number };
   magnets: boolean;
+  // Engraved from the top into the widest padding strip, if there is room.
+  topText: Shape2D | null;
+  // Engraved into the bottom along each edge, mirrored to read from below.
+  edgeMarks: Record<'left' | 'right' | 'front' | 'back', Shape2D | null>;
+  // Engraved into the middle of the bottom, mirrored to read from below.
+  name: Shape2D | null;
 }
 
 // Baseplate per spec: each cell is a 42 mm pocket, from the top 2.15 at 45°,
@@ -242,7 +262,66 @@ export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinR
       pockets.push(cutter.translate(cx + (i - (p.x - 1) / 2) * GRID, cy + (j - (p.y - 1) / 2) * GRID, 0));
     }
   }
-  const body = prism(roundedRect(width, depth, PLATE_RADIUS), 0, top).subtract(Manifold.union(pockets));
+  const engravings: Manifold[] = [];
+
+  const strips = [
+    { pad: front, length: width, center: [0, (front - depth) / 2], rotate: 0 },
+    { pad: back, length: width, center: [0, (depth - back) / 2], rotate: 0 },
+    { pad: left, length: depth, center: [(left - width) / 2, 0], rotate: 90 },
+    { pad: right, length: depth, center: [(width - right) / 2, 0], rotate: 90 },
+  ];
+  const strip = strips.reduce((a, b) => (b.pad > a.pad ? b : a));
+  const topText = toCrossSection(wasm, p.topText ?? { parts: [] });
+  if (topText && strip.pad - 2 * PAD_TEXT_MARGIN >= PAD_TEXT_MIN) {
+    const placed = placeText(topText, {
+      length: strip.length - 2 * PLATE_RADIUS,
+      height: Math.min(strip.pad - 2 * PAD_TEXT_MARGIN, PAD_TEXT_MAX),
+      rotate: strip.rotate,
+      center: strip.center as Vec2,
+    });
+    if (placed && placed.height >= PAD_TEXT_MIN) engravings.push(prism(placed.cs, top - ENGRAVE_DEPTH, top + 0.01));
+  }
+
+  const mark = p.magnets ? BOTTOM_MARK_FLOOR : BOTTOM_MARK_OPEN;
+  const markLength = (edge: number) => Math.min(edge - 2 * PLATE_RADIUS, BOTTOM_MARK_MAX_LENGTH);
+  const edges = [
+    { shape: p.edgeMarks.front, length: markLength(width), center: [cx, -depth / 2 + mark.inset], rotate: 0 },
+    { shape: p.edgeMarks.back, length: markLength(width), center: [cx, depth / 2 - mark.inset], rotate: 0 },
+    { shape: p.edgeMarks.left, length: markLength(depth), center: [-width / 2 + mark.inset, cy], rotate: 90 },
+    { shape: p.edgeMarks.right, length: markLength(depth), center: [width / 2 - mark.inset, cy], rotate: 90 },
+  ];
+  for (const e of edges) {
+    const cs = e.shape && toCrossSection(wasm, e.shape);
+    if (!cs) continue;
+    const placed = placeText(cs, {
+      length: e.length,
+      height: mark.height,
+      rotate: e.rotate,
+      mirror: true,
+      center: e.center as Vec2,
+    });
+    if (placed) engravings.push(prism(placed.cs, -0.01, BOTTOM_MARK_DEPTH));
+  }
+
+  // Open plates: the wall crossing (or wall) next to the middle of the grid;
+  // a single cell has no wall to carry the name.
+  const nameCs = p.name && toCrossSection(wasm, p.name);
+  const wallNearMiddle = (cells: number) => (Math.floor(cells / 2) - cells / 2) * GRID;
+  if (nameCs && (p.magnets || p.x > 1 || p.y > 1)) {
+    const size = p.magnets ? BOTTOM_NAME_FLOOR : BOTTOM_NAME_OPEN;
+    const placed = placeText(nameCs, {
+      length: size,
+      height: size,
+      rotate: 0,
+      mirror: true,
+      center: p.magnets ? [cx, cy] : [cx + (p.x > 1 ? wallNearMiddle(p.x) : 0), cy + (p.y > 1 ? wallNearMiddle(p.y) : 0)],
+    });
+    if (placed) engravings.push(prism(placed.cs, -0.01, BOTTOM_MARK_DEPTH));
+  }
+
+  const body = prism(roundedRect(width, depth, PLATE_RADIUS), 0, top).subtract(
+    Manifold.union([...pockets, ...engravings]),
+  );
   return { body: toMeshData(body), relief: null, size: [width, depth, top] };
 }
 
@@ -277,6 +356,24 @@ function fitInto(cs: CrossSection | null, box: Box2D, maxScale = Infinity): Cros
     .translate([-b.min[0], -(b.min[1] + b.max[1]) / 2])
     .scale(scale)
     .translate([box.x0, midY]);
+}
+
+// Scales the shape to fit length × height, centers it on the origin, then
+// rotates it (degrees), optionally mirrors it in x and moves it to center.
+function placeText(
+  cs: CrossSection,
+  o: { length: number; height: number; rotate: number; mirror?: boolean; center: Vec2 },
+): { cs: CrossSection; height: number } | null {
+  if (cs.isEmpty() || o.length <= 0 || o.height <= 0) return null;
+  const b = cs.bounds();
+  const w = b.max[0] - b.min[0];
+  const h = b.max[1] - b.min[1];
+  const scale = Math.min(o.length / w, o.height / h);
+  if (!(scale > 0) || !isFinite(scale)) return null;
+  let placed = cs.translate([-(b.min[0] + b.max[0]) / 2, -(b.min[1] + b.max[1]) / 2]).scale(scale);
+  if (o.rotate) placed = placed.rotate(o.rotate);
+  if (o.mirror) placed = placed.mirror([1, 0]);
+  return { cs: placed.translate(o.center), height: h * scale };
 }
 
 function layoutLabel(wasm: ManifoldToplevel, label: LabelParams, area: Box2D): CrossSection | null {

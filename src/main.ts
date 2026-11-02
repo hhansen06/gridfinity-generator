@@ -12,7 +12,7 @@ import {
   type LabelIcon,
   type Shape2D,
 } from './geometry/gridfinity';
-import { layoutDrawer, type DrawerLayout, type PadMode, type PlateType } from './baseplates';
+import { drawerLabel, layoutDrawer, type DrawerLayout, type PadMode, type PlateType } from './baseplates';
 import { textToShape } from './geometry/text';
 import { loadFont } from './fonts';
 import { loadImage, rasterToShape, svgToShape } from './logo';
@@ -254,16 +254,33 @@ async function generate() {
 
 const plateCache = new Map<string, BinResult>();
 
-function plateKey(t: PlateType) {
-  return JSON.stringify([t.x, t.y, t.pad, t.magnets]);
+function plateKey(t: PlateType, label: string) {
+  return JSON.stringify([t.name, t.x, t.y, t.pad, t.magnets, t.neighbors, label]);
 }
 
-function buildPlate(m: ManifoldToplevel, t: PlateType): BinResult {
-  const key = plateKey(t);
+// Drawer size on top; plate name and neighbor names on the bottom.
+async function buildPlate(m: ManifoldToplevel, t: PlateType, label: string): Promise<BinResult> {
+  const key = plateKey(t, label);
   let result = plateCache.get(key);
   if (!result) {
+    const font = await loadFont('roboto');
+    const shape = (text: string) => (text ? textToShape(font, text, 'left') : null);
+    const n = t.neighbors;
     try {
-      result = buildBaseplate(m, { x: t.x, y: t.y, pad: t.pad, magnets: t.magnets });
+      result = buildBaseplate(m, {
+        x: t.x,
+        y: t.y,
+        pad: t.pad,
+        magnets: t.magnets,
+        topText: shape(label),
+        name: shape(t.name),
+        edgeMarks: {
+          left: shape(n.left.join('/')),
+          right: shape(n.right.join('/')),
+          front: shape(n.front.join('/')),
+          back: shape(n.back.join('/')),
+        },
+      });
     } finally {
       collectGarbage();
     }
@@ -312,8 +329,9 @@ async function generatePlates(s: FormState, run: number, started: number) {
   }
 
   const meshes = new Map<string, BinResult>();
+  const label = drawerLabel({ width: s.drawerW, depth: s.drawerD, clearance: s.clearance });
   try {
-    for (const t of layout.plates) meshes.set(t.name, buildPlate(wasm!, t));
+    for (const t of layout.plates) meshes.set(t.name, await buildPlate(wasm!, t, label));
   } catch (err) {
     console.error(err);
     setStatus('Die Geometrie konnte nicht erzeugt werden. Bitte Eingaben prüfen.');

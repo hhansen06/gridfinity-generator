@@ -25,7 +25,17 @@ export interface PlateType {
   // Centers of every copy in drawer coordinates (drawer centered at the origin);
   // alt marks every other plate in a checkerboard pattern.
   positions: { x: number; y: number; alt: boolean }[];
+  // Names of the plate types touching each edge, over all copies.
+  neighbors: Record<Side, string[]>;
 }
+
+export type Side = 'left' | 'right' | 'front' | 'back';
+
+const num = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 2 });
+
+// Drawer size and play as engraved into the padding, e.g. "500×400 ±1".
+export const drawerLabel = (d: Pick<DrawerParams, 'width' | 'depth' | 'clearance'>) =>
+  `${num.format(d.width)}×${num.format(d.depth)} ±${num.format(d.clearance)}`;
 
 export interface DrawerLayout {
   cellsX: number;
@@ -111,9 +121,12 @@ export function layoutDrawer(d: DrawerParams): DrawerLayout | string {
   const totalX = piecesX.reduce((a, p) => a + length(p), 0);
   const totalY = piecesY.reduce((a, p) => a + length(p), 0);
   const types = new Map<string, PlateType>();
+  // grid[row][col], rows front to back.
+  const grid: PlateType[][] = [];
   let y0 = -totalY / 2;
   for (const [row, py] of piecesY.entries()) {
     let x0 = -totalX / 2;
+    grid.push([]);
     for (const [col, px] of piecesX.entries()) {
       const pad = { left: px.padStart, right: px.padEnd, front: py.padStart, back: py.padEnd };
       const key = JSON.stringify([px.cells, py.cells, pad]);
@@ -127,14 +140,27 @@ export function layoutDrawer(d: DrawerParams): DrawerLayout | string {
           magnets: d.magnets,
           size: [length(px), length(py)],
           positions: [],
+          neighbors: { left: [], right: [], front: [], back: [] },
         };
         types.set(key, type);
       }
+      grid[row].push(type);
       type.positions.push({ x: x0 + length(px) / 2, y: y0 + length(py) / 2, alt: (row + col) % 2 === 1 });
       x0 += length(px);
     }
     y0 += length(py);
   }
+
+  const offsets: [Side, number, number][] = [['left', 0, -1], ['right', 0, 1], ['front', -1, 0], ['back', 1, 0]];
+  for (const [row, cells] of grid.entries()) {
+    for (const [col, type] of cells.entries()) {
+      for (const [side, dr, dc] of offsets) {
+        const n = grid[row + dr]?.[col + dc];
+        if (n && !type.neighbors[side].includes(n.name)) type.neighbors[side].push(n.name);
+      }
+    }
+  }
+  for (const t of types.values()) for (const list of Object.values(t.neighbors)) list.sort();
 
   return {
     cellsX,
