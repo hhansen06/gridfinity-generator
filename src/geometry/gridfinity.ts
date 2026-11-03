@@ -102,9 +102,8 @@ export interface InsertCutout {
 }
 
 export interface InsertParams {
-  // Pocket outline in bin coordinates, already grown by the clearance.
-  pocket: Vec2[][];
-  depth: number;
+  // Pocket outlines in bin coordinates, already grown by the clearance.
+  pockets: { polygons: Vec2[][]; depth: number }[];
   cutouts: InsertCutout[];
 }
 
@@ -369,7 +368,7 @@ function insertCuts(wasm: ManifoldToplevel, ins: InsertParams, clip: CrossSectio
   const bottom = (depth: number) => Math.min(Math.max(height - depth, INSERT_MIN_FLOOR), height - 0.2);
   const cut = (cs: CrossSection, depth: number) => prism(cs.intersect(clip), bottom(depth), height + 0.01);
   const cuts: Manifold[] = [];
-  if (ins.pocket.length) cuts.push(cut(CrossSection.ofPolygons(ins.pocket, 'NonZero'), ins.depth));
+  for (const p of ins.pockets) if (p.polygons.length) cuts.push(cut(CrossSection.ofPolygons(p.polygons, 'NonZero'), p.depth));
   for (const c of ins.cutouts) {
     if (c.w <= 0 || c.h <= 0) continue;
     if (c.kind === 'rect') {

@@ -17,6 +17,20 @@ export interface Cutout {
   depth: number;
 }
 
+// An object outline in paper millimeters; depth null uses the global depth.
+export interface Contour {
+  id: string;
+  points: Pt[];
+  depth: number | null;
+}
+
+// Center of the bounding box.
+export function shapeCenter(pts: Pt[]): Pt {
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+}
+
 // Material kept between the pocket and the clipped wall.
 const MIN_SIDE = 1.5;
 

@@ -1,8 +1,8 @@
 import { PAPER, type Pt } from './detect';
-import { local, toLocal, type Cutout } from './layout';
+import { local, shapeCenter, toLocal, type Contour, type Cutout } from './layout';
 
 export interface Overlay {
-  // Grown pocket, bin footprint and usable inner area, in paper millimeters.
+  // Grown pockets, bin footprint and usable inner area, in paper millimeters.
   pocket: Pt[][];
   bin: Pt[];
   inner: Pt[];
@@ -15,7 +15,9 @@ interface Callbacks {
 }
 
 type Drag =
-  | { kind: 'vertex'; i: number }
+  | { kind: 'vertex'; id: string; i: number }
+  | { kind: 'shape'; id: string; last: Pt }
+  | { kind: 'shapeRotate'; id: string; center: Pt; start: number; orig: Pt[] }
   | { kind: 'move'; id: string; dx: number; dy: number }
   | { kind: 'size'; id: string }
   | { kind: 'rotate'; id: string }
@@ -35,10 +37,12 @@ const MIN_SIZE = 2;
 
 const fmt = (v: number) => Math.round(v * 100) / 100;
 const pathOf = (pts: Pt[]) => (pts.length ? `M${pts.map(([x, y]) => `${fmt(x)} ${fmt(y)}`).join('L')}Z` : '');
+const deg = (a: Pt, b: Pt) => (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
 
 export class ContourEditor {
-  outline: Pt[] = [];
+  contours: Contour[] = [];
   cutouts: Cutout[] = [];
+  // Id of the selected contour or cutout.
   selected: string | null = null;
   private mode: 'empty' | 'contour' | 'paper' = 'empty';
   private image = '';
@@ -50,7 +54,7 @@ export class ContourEditor {
   private downAt: { x: number; y: number; moved: boolean } | null = null;
   // Pointer capture retargets dblclick to the svg, so double taps on a
   // vertex are detected here.
-  private lastTap = { i: -1, time: 0 };
+  private lastTap = { key: '', time: 0 };
   private paper: { corners: Pt[]; done: (corners: Pt[] | null) => void } | null = null;
 
   constructor(
@@ -67,7 +71,7 @@ export class ContourEditor {
       const target = (e.target as Element).closest<SVGElement>('[data-kind="vertex"]');
       if (!target) return;
       e.preventDefault();
-      this.removeVertex(Number(target.dataset.i));
+      this.removeVertex(target.dataset.id!, Number(target.dataset.i));
     });
     svg.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     bar.addEventListener('click', (e) => this.onBar(e));
@@ -82,11 +86,11 @@ export class ContourEditor {
     this.empty.hidden = false;
   }
 
-  showContour(image: string, outline: Pt[], cutouts: Cutout[]): void {
+  showContour(image: string, contours: Contour[], cutouts: Cutout[]): void {
     this.mode = 'contour';
     this.image = image;
     this.size = PAPER;
-    this.outline = outline;
+    this.contours = contours;
     this.cutouts = cutouts;
     this.paper = null;
     this.show();
@@ -135,7 +139,7 @@ export class ContourEditor {
       this.mode === 'paper'
         ? `<span>Ziehe die vier Punkte auf die Ecken des Blatts.</span>
            <span class="bar-actions"><button type="button" class="ghost" data-bar="cancel">Abbrechen</button><button type="button" class="primary" data-bar="apply">Übernehmen</button></span>`
-        : `<span>Punkte ziehen · <b>+</b> auf Kanten fügt ein · Doppelklick löscht · Mausrad zoomt</span>
+        : `<span>Kontur anklicken · Punkte ziehen · <b>+</b> fügt ein · Doppelklick löscht · Mausrad zoomt</span>
            <span class="bar-actions"><button type="button" class="ghost" data-bar="fit">Einpassen</button></span>`;
     this.fit();
   }
@@ -174,20 +178,14 @@ export class ContourEditor {
     } else {
       html += `<rect class="paper-edge" x="0" y="0" width="${iw}" height="${ih}" />`;
       html += '<g class="overlay"></g>';
+      html += this.contours
+        .map((c) => `<path class="outline${c.id === this.selected ? ' selected' : ''}" data-kind="shape" data-id="${c.id}" d="${pathOf(c.points)}" />`)
+        .join('');
       html += this.cutouts.map((c) => this.cutoutSvg(c)).join('');
-      html += `<path class="outline" d="${pathOf(this.outline)}" />`;
-      const n = this.outline.length;
-      html += this.outline
-        .map((p, i) => {
-          const q = this.outline[(i + 1) % n];
-          return `<g class="mid" data-kind="mid" data-i="${i}" transform="translate(${fmt((p[0] + q[0]) / 2)} ${fmt((p[1] + q[1]) / 2)})"><circle r="${r * 0.8}" /><path d="M${-r * 0.45} 0H${r * 0.45}M0 ${-r * 0.45}V${r * 0.45}" /></g>`;
-        })
-        .join('');
-      html += this.outline
-        .map(([px, py], i) => `<circle class="vtx" data-kind="vertex" data-i="${i}" cx="${fmt(px)}" cy="${fmt(py)}" r="${r}" />`)
-        .join('');
-      const sel = this.cutouts.find((c) => c.id === this.selected);
-      if (sel) html += this.handlesSvg(sel, r);
+      const shape = this.contours.find((c) => c.id === this.selected);
+      if (shape) html += this.shapeHandlesSvg(shape, r);
+      const cut = this.cutouts.find((c) => c.id === this.selected);
+      if (cut) html += this.handlesSvg(cut, r);
     }
     this.svg.innerHTML = html;
     this.renderOverlay();
@@ -200,6 +198,26 @@ export class ContourEditor {
     g.innerHTML = o
       ? `<path class="bin" d="${pathOf(o.bin)}" /><path class="inner" d="${pathOf(o.inner)}" /><path class="pocket" d="${o.pocket.map(pathOf).join('')}" />`
       : '';
+  }
+
+  private shapeHandlesSvg(c: Contour, r: number): string {
+    const pts = c.points;
+    const n = pts.length;
+    let html = pts
+      .map((p, i) => {
+        const q = pts[(i + 1) % n];
+        return `<g class="mid" data-kind="mid" data-id="${c.id}" data-i="${i}" transform="translate(${fmt((p[0] + q[0]) / 2)} ${fmt((p[1] + q[1]) / 2)})"><circle r="${r * 0.8}" /><path d="M${-r * 0.45} 0H${r * 0.45}M0 ${-r * 0.45}V${r * 0.45}" /></g>`;
+      })
+      .join('');
+    html += pts
+      .map(([px, py], i) => `<circle class="vtx" data-kind="vertex" data-id="${c.id}" data-i="${i}" cx="${fmt(px)}" cy="${fmt(py)}" r="${r}" />`)
+      .join('');
+    // Rotation handle above the top of the contour.
+    const [cx] = shapeCenter(pts);
+    const top = Math.min(...pts.map((p) => p[1]));
+    const hy = top - ROTATE_GAP_PX * this.unit();
+    html += `<path class="stem shape-stem" d="M${fmt(cx)} ${fmt(top)}L${fmt(cx)} ${fmt(hy)}" /><circle class="vtx rot shape-rot" data-kind="shapeRotate" data-id="${c.id}" cx="${fmt(cx)}" cy="${fmt(hy)}" r="${r}" />`;
+    return html;
   }
 
   private cutoutSvg(c: Cutout): string {
@@ -231,6 +249,13 @@ export class ContourEditor {
     return [p.x, p.y];
   }
 
+  private setSelected(id: string | null): void {
+    if (this.selected === id) return;
+    this.selected = id;
+    this.cb.select(id);
+    this.render();
+  }
+
   private onDown(e: PointerEvent): void {
     if (e.button !== 0 && e.button !== 1) return;
     const target = (e.target as Element).closest<SVGElement>('[data-kind]');
@@ -238,38 +263,38 @@ export class ContourEditor {
     const i = Number(target?.dataset.i);
     const id = target?.dataset.id ?? '';
     const p = this.point(e);
+    const shape = this.contours.find((c) => c.id === id);
     if (e.button === 1 || !kind) {
       this.drag = { kind: 'pan', x: e.clientX, y: e.clientY, view: { ...this.view } };
-      if (this.selected && e.button === 0) {
-        this.selected = null;
-        this.cb.select(null);
-        this.render();
-      }
-    } else if (kind === 'mid') {
-      this.outline.splice(i + 1, 0, p);
-      this.drag = { kind: 'vertex', i: i + 1 };
+      if (e.button === 0) this.setSelected(null);
+    } else if (kind === 'mid' && shape) {
+      shape.points.splice(i + 1, 0, p);
+      this.drag = { kind: 'vertex', id, i: i + 1 };
       this.render();
       this.cb.change(false);
     } else if (kind === 'vertex') {
-      const double = this.lastTap.i === i && e.timeStamp - this.lastTap.time < 400;
-      this.lastTap = { i, time: e.timeStamp };
+      const key = `${id}:${i}`;
+      const double = this.lastTap.key === key && e.timeStamp - this.lastTap.time < 400;
+      this.lastTap = { key, time: e.timeStamp };
       if (double) {
-        this.lastTap.i = -1;
-        this.removeVertex(i);
+        this.lastTap.key = '';
+        this.removeVertex(id, i);
         e.preventDefault();
         return;
       }
-      this.drag = { kind, i };
+      this.drag = { kind: 'vertex', id, i };
+    } else if (kind === 'shape' && shape) {
+      this.drag = { kind: 'shape', id, last: p };
+      this.setSelected(id);
+    } else if (kind === 'shapeRotate' && shape) {
+      const center = shapeCenter(shape.points);
+      this.drag = { kind: 'shapeRotate', id, center, start: deg(center, p), orig: shape.points.map((q) => [...q] as Pt) };
     } else if (kind === 'corner') {
       this.drag = { kind, i };
     } else if (kind === 'move') {
       const c = this.cutouts.find((c) => c.id === id)!;
       this.drag = { kind: 'move', id, dx: c.x - p[0], dy: c.y - p[1] };
-      if (this.selected !== id) {
-        this.selected = id;
-        this.cb.select(id);
-        this.render();
-      }
+      this.setSelected(id);
     } else if (kind === 'size' || kind === 'rotate') {
       this.drag = { kind, id };
     }
@@ -295,8 +320,29 @@ export class ContourEditor {
       this.render();
       return;
     }
-    if (d.kind === 'vertex') {
-      this.outline[d.i] = p;
+    if (d.kind === 'vertex' || d.kind === 'shape' || d.kind === 'shapeRotate') {
+      const shape = this.contours.find((c) => c.id === d.id);
+      if (!shape) return;
+      if (d.kind === 'vertex') {
+        shape.points[d.i] = p;
+      } else if (d.kind === 'shape') {
+        const [dx, dy] = [p[0] - d.last[0], p[1] - d.last[1]];
+        for (const q of shape.points) {
+          q[0] += dx;
+          q[1] += dy;
+        }
+        d.last = p;
+      } else {
+        const step = e.shiftKey ? 15 : 1;
+        const a = (Math.round((deg(d.center, p) - d.start) / step) * step * Math.PI) / 180;
+        const [cx, cy] = d.center;
+        const [c, s] = [Math.cos(a), Math.sin(a)];
+        shape.points.forEach((q, k) => {
+          const [ox, oy] = [d.orig[k][0] - cx, d.orig[k][1] - cy];
+          q[0] = cx + ox * c - oy * s;
+          q[1] = cy + ox * s + oy * c;
+        });
+      }
     } else {
       const c = this.cutouts.find((c) => c.id === d.id);
       if (!c) return;
@@ -312,9 +358,8 @@ export class ContourEditor {
           c.h = fmt(Math.max(MIN_SIZE, 2 * Math.abs(ly)));
         }
       } else if (d.kind === 'rotate') {
-        const deg = (Math.atan2(p[1] - c.y, p[0] - c.x) * 180) / Math.PI + 90;
         const step = e.shiftKey ? 15 : 1;
-        c.angle = normalizeAngle(Math.round(deg / step) * step);
+        c.angle = normalizeAngle(Math.round((deg([c.x, c.y], p) + 90) / step) * step);
       }
     }
     this.render();
@@ -329,9 +374,10 @@ export class ContourEditor {
     if (changed) this.cb.change(true);
   }
 
-  private removeVertex(i: number): void {
-    if (this.outline.length <= 3) return;
-    this.outline.splice(i, 1);
+  private removeVertex(id: string, i: number): void {
+    const shape = this.contours.find((c) => c.id === id);
+    if (!shape || shape.points.length <= 3) return;
+    shape.points.splice(i, 1);
     this.render();
     this.cb.change(true);
   }

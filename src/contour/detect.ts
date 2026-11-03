@@ -15,6 +15,9 @@ const BG_BLOCK = 20;
 const CLOSE_RADIUS = 1;
 const SIMPLIFY = 0.8;
 const MAX_POINTS = 60;
+// Objects smaller than this (mm²) are dirt or noise.
+const MIN_OBJECT = 100;
+const MAX_OBJECTS = 20;
 
 export interface Photo {
   canvas: HTMLCanvasElement;
@@ -243,9 +246,9 @@ function homography(from: Pt[], to: Pt[]): number[] {
 
 // ---------- Object ----------
 
-// Outline in paper millimeters (y down) of the largest object on the sheet.
-// Sensitivity 0…100, 50 uses the automatic threshold.
-export function detectObject(img: ImageData, sensitivity: number): Pt[] | null {
+// Outlines in paper millimeters (y down) of all objects on the sheet, largest
+// first. Sensitivity 0…100, 50 uses the automatic threshold.
+export function detectObjects(img: ImageData, sensitivity: number): Pt[][] {
   const { width: w, height: h, data } = img;
   const n = w * h;
   const lum = new Float32Array(n);
@@ -276,17 +279,26 @@ export function detectObject(img: ImageData, sensitivity: number): Pt[] | null {
   const r = Math.round(CLOSE_RADIUS * PX_PER_MM);
   mask = morph(morph(mask, w, h, r, true), w, h, r, false);
   mask = fillHoles(mask, w, h);
-  const comp = largestComponent(mask, w, h);
-  if (comp.size < 25 * PX_PER_MM * PX_PER_MM) return null;
-
-  const loops = traceLoops(comp.mask, w, h);
-  if (!loops.length) return null;
-  const loop = loops.reduce((a, b) => (Math.abs(polygonArea(b)) > Math.abs(polygonArea(a)) ? b : a));
-  const mm = loop.map(([x, y]): Pt => [x / PX_PER_MM, y / PX_PER_MM]);
-  let tolerance = SIMPLIFY;
-  let simple = simplifyClosed(mm, tolerance);
-  while (simple.length > MAX_POINTS) simple = simplifyClosed(mm, (tolerance *= 1.4));
-  return simple.length >= 3 ? simple : null;
+  const { label, sizes } = labelComponents(mask, w, h);
+  const ids = sizes
+    .map((size, id) => ({ size, id }))
+    .filter((c) => c.id > 0 && c.size >= MIN_OBJECT * PX_PER_MM * PX_PER_MM)
+    .sort((a, b) => b.size - a.size)
+    .slice(0, MAX_OBJECTS);
+  const outlines: Pt[][] = [];
+  for (const { id } of ids) {
+    const comp = new Uint8Array(n);
+    for (let i = 0; i < n; i++) comp[i] = label[i] === id ? 1 : 0;
+    const loops = traceLoops(comp, w, h);
+    if (!loops.length) continue;
+    const loop = loops.reduce((a, b) => (Math.abs(polygonArea(b)) > Math.abs(polygonArea(a)) ? b : a));
+    const mm = loop.map(([x, y]): Pt => [x / PX_PER_MM, y / PX_PER_MM]);
+    let tolerance = SIMPLIFY;
+    let simple = simplifyClosed(mm, tolerance);
+    while (simple.length > MAX_POINTS) simple = simplifyClosed(mm, (tolerance *= 1.4));
+    if (simple.length >= 3) outlines.push(simple);
+  }
+  return outlines;
 }
 
 function background(lum: Float32Array, w: number, h: number, inside: (x: number, y: number) => boolean) {
@@ -454,9 +466,18 @@ function fillHoles(mask: Uint8Array, w: number, h: number): Uint8Array {
 }
 
 function largestComponent(mask: Uint8Array, w: number, h: number): { mask: Uint8Array; size: number } {
-  const label = new Int32Array(mask.length);
+  const { label, sizes } = labelComponents(mask, w, h);
   let best = 0;
-  let bestSize = 0;
+  for (let id = 1; id < sizes.length; id++) if (sizes[id] > sizes[best]) best = id;
+  const out = new Uint8Array(mask.length);
+  for (let i = 0; i < out.length; i++) out[i] = label[i] === best && best ? 1 : 0;
+  return { mask: out, size: best ? sizes[best] : 0 };
+}
+
+// 4-connected components; sizes[id] is the pixel count of component id (from 1).
+function labelComponents(mask: Uint8Array, w: number, h: number): { label: Int32Array; sizes: number[] } {
+  const label = new Int32Array(mask.length);
+  const sizes = [0];
   let next = 0;
   const stack: number[] = [];
   for (let start = 0; start < mask.length; start++) {
@@ -477,14 +498,9 @@ function largestComponent(mask: Uint8Array, w: number, h: number): { mask: Uint8
         }
       }
     }
-    if (size > bestSize) {
-      bestSize = size;
-      best = id;
-    }
+    sizes.push(size);
   }
-  const out = new Uint8Array(mask.length);
-  for (let i = 0; i < out.length; i++) out[i] = label[i] === best && best ? 1 : 0;
-  return { mask: out, size: bestSize };
+  return { label, sizes };
 }
 
 // Closed pixel-edge loops around the mask, in pixel corner coordinates.

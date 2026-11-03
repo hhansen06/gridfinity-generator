@@ -12,9 +12,19 @@ import {
 } from '../geometry/gridfinity';
 import { textToShape } from '../geometry/text';
 import { loadFont } from '../fonts';
-import { detectObject, findPaper, loadPhoto, PAPER, rectify, type Photo, type Pt } from './detect';
+import { detectObjects, findPaper, loadPhoto, PAPER, rectify, type Photo, type Pt } from './detect';
 import { ContourEditor, type Overlay } from './editor';
-import { bestRotation, cellsFor, fitPoints, makeLayout, type Cutout, type CutoutKind, type Layout } from './layout';
+import {
+  bestRotation,
+  cellsFor,
+  fitPoints,
+  makeLayout,
+  shapeCenter,
+  type Contour,
+  type Cutout,
+  type CutoutKind,
+  type Layout,
+} from './layout';
 
 const STATE_KEY = 'gridfinity-contour-v1';
 const IMAGE_KEY = 'gridfinity-contour-image-v1';
@@ -57,8 +67,11 @@ export interface ContourBuild {
   notes: string[];
 }
 
+// Copies are placed this far right and down of the original.
+const DUPLICATE_SHIFT = 10;
+
 interface Plan {
-  pocket: Pt[][];
+  pockets: { polygons: Pt[][]; depth: number }[];
   layout: Layout;
   x: number;
   y: number;
@@ -86,10 +99,12 @@ export function setupContour(ctx: Context) {
   const paperAdjust = $<HTMLButtonElement>('paper-adjust');
   const cutoutList = $<HTMLUListElement>('cutout-list');
   const cutoutFields = $('cutout-fields');
+  const contourList = $<HTMLUListElement>('contour-list');
+  const contourFields = $('contour-fields');
   const field = <T extends HTMLInputElement | HTMLSelectElement>(name: string) => form.elements.namedItem(name) as T;
 
   let image: string | null = null;
-  let outline: Pt[] = [];
+  let contours: Contour[] = [];
   let cutouts: Cutout[] = [];
   let photo: Photo | null = null;
   let corners: Pt[] | null = null;
@@ -98,11 +113,11 @@ export function setupContour(ctx: Context) {
   const editor = new ContourEditor($('editor-svg') as unknown as SVGSVGElement, $('editor-bar'), $('editor-empty'), {
     change(final) {
       syncFields();
-      if (final) renderCutouts();
+      if (final) renderLists();
       ctx.schedule();
     },
     select() {
-      renderCutouts();
+      renderLists();
     },
   });
 
@@ -136,16 +151,20 @@ export function setupContour(ctx: Context) {
   // ---------- Planning ----------
 
   function plan(m: ManifoldToplevel, f: ContourFields, lip: boolean): Plan {
-    let pocket: Pt[][] = [];
+    const pockets: Plan['pockets'] = [];
     try {
-      const cs = m.CrossSection.ofPolygons([outline], 'NonZero');
-      pocket = (f.offset > 0 ? cs.offset(f.offset, 'Round', 2, 48) : cs).toPolygons() as Pt[][];
+      for (const c of contours) {
+        const cs = m.CrossSection.ofPolygons([c.points], 'NonZero');
+        const polygons = (f.offset > 0 ? cs.offset(f.offset, 'Round', 2, 48) : cs).toPolygons() as Pt[][];
+        pockets.push({ polygons, depth: c.depth ?? f.depth });
+      }
     } finally {
       collectGarbage();
     }
+    const pocket = pockets.flatMap((p) => p.polygons);
     const inset = insertInset(lip);
     const layout = makeLayout(fitPoints(pocket, cutouts), f.rotation);
-    const deepest = Math.max(f.depth, ...cutouts.map((c) => c.depth));
+    const deepest = Math.max(...pockets.map((p) => p.depth), ...cutouts.map((c) => c.depth));
     const auto = {
       x: Math.min(MAX_X, cellsFor(layout.extent[0], inset)),
       y: Math.min(MAX_X, cellsFor(layout.extent[1], inset)),
@@ -159,7 +178,7 @@ export function setupContour(ctx: Context) {
       const d = y * GRID - CLEARANCE - 2 * inset;
       return ([[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]] as Vec2[]).map(layout.toPaper);
     };
-    return { pocket, layout, x, y, z, auto, overlay: { pocket, bin: rect(0), inner: rect(inset) } };
+    return { pockets, layout, x, y, z, auto, overlay: { pocket, bin: rect(0), inner: rect(inset) } };
   }
 
   function updateReadouts(s: ContourForm): void {
@@ -167,7 +186,7 @@ export function setupContour(ctx: Context) {
     $('sensitivity-out').textContent = String(f.sensitivity);
     $('offset-out').textContent = num.format(f.offset);
     const m = ctx.wasm();
-    if (!m || outline.length < 3) {
+    if (!m || !contours.length) {
       editor.setOverlay(null);
       return;
     }
@@ -187,7 +206,7 @@ export function setupContour(ctx: Context) {
   }
 
   async function build(m: ManifoldToplevel, s: ContourForm): Promise<ContourBuild | null> {
-    if (outline.length < 3) return null;
+    if (!contours.length) return null;
     const f = readFields();
     const p = plan(m, f, s.lip);
     const angle = (c: Cutout) => p.layout.rotation - c.angle;
@@ -198,7 +217,7 @@ export function setupContour(ctx: Context) {
     const notes: string[] = [];
     if (p.x < p.auto.x || p.y < p.auto.y) notes.push('Die Aussparung passt nicht ganz in die Box und wird abgeschnitten.');
     const maxDepth = p.z * HEIGHT_UNIT - INSERT_MIN_FLOOR;
-    if (Math.max(f.depth, ...cutouts.map((c) => c.depth)) > maxDepth) {
+    if (Math.max(...p.pockets.map((q) => q.depth), ...cutouts.map((c) => c.depth)) > maxDepth) {
       notes.push(`Tiefe auf ${num.format(maxDepth)} mm begrenzt (Box zu niedrig).`);
     }
     const bottomText = textToShape(await loadFont('roboto'), `${p.x}×${p.y}×${p.z}`, 'left');
@@ -211,7 +230,10 @@ export function setupContour(ctx: Context) {
         magnets: s.magnets,
         label: null,
         bottomText,
-        insert: { pocket: p.pocket.map((poly) => poly.map(p.layout.toBin)), depth: f.depth, cutouts: insertCutouts },
+        insert: {
+          pockets: p.pockets.map((q) => ({ polygons: q.polygons.map((poly) => poly.map(p.layout.toBin)), depth: q.depth })),
+          cutouts: insertCutouts,
+        },
       });
       saveState();
       return { result, x: p.x, y: p.y, z: p.z, notes };
@@ -275,7 +297,7 @@ export function setupContour(ctx: Context) {
         showError(null);
         applyCorners(false);
       } else if (image) {
-        editor.showContour(image, outline, cutouts);
+        editor.showContour(image, contours, cutouts);
       } else {
         editor.showEmpty();
       }
@@ -292,57 +314,162 @@ export function setupContour(ctx: Context) {
 
   function detect(autoRotate: boolean) {
     if (!rectified || !image) return;
-    const found = detectObject(rectified, readFields().sensitivity);
-    if (found) {
+    const found = detectObjects(rectified, readFields().sensitivity);
+    if (found.length) {
       showError(null);
-      outline = found;
+      contours = found.map((points) => ({ id: crypto.randomUUID(), points, depth: null }));
     } else {
       showError('Kein Gegenstand erkannt. Empfindlichkeit erhöhen oder die Kontur von Hand ziehen.');
-      const [cx, cy] = [PAPER[0] / 2, PAPER[1] / 2];
-      outline = [[cx - 30, cy - 20], [cx + 30, cy - 20], [cx + 30, cy + 20], [cx - 30, cy + 20]];
+      contours = [manualContour()];
     }
-    editor.showContour(image, outline, cutouts);
+    editor.showContour(image, contours, cutouts);
+    // A single part is ready to edit right away.
+    editor.select(contours.length === 1 ? contours[0].id : null);
     if (autoRotate) autoRotation();
-    renderCutouts();
+    renderLists();
     updateTools();
     ctx.schedule();
   }
 
   function autoRotation() {
     const m = ctx.wasm();
-    if (!m || outline.length < 3) return;
+    if (!m || !contours.length) return;
     const lip = field<HTMLInputElement>('lip').checked;
     const f = { ...readFields(), rotation: 0 };
-    const pts = fitPoints(plan(m, f, lip).pocket, cutouts);
+    const pts = fitPoints(plan(m, f, lip).overlay.pocket, cutouts);
     field<HTMLInputElement>('rotation').value = String(bestRotation(pts, insertInset(lip)));
   }
 
   function updateTools() {
     photoTools.hidden = !image || editor.isPaper;
+    $('contour-section').hidden = !image;
     paperAdjust.hidden = !photo;
   }
 
   // ---------- Cutouts ----------
 
   function addCutout(kind: CutoutKind) {
-    if (outline.length < 3) return;
-    const xs = outline.map((p) => p[0]);
-    const ys = outline.map((p) => p[1]);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const depth = readFields().depth;
+    if (!contours.length) return;
+    // Next to the selected contour, or all of them.
+    const shape = contours.find((c) => c.id === editor.selected);
+    const pts = shape ? shape.points : contours.flatMap((c) => c.points);
+    const [cx, cy] = shapeCenter(pts);
+    const depth = shape?.depth ?? readFields().depth;
     const id = crypto.randomUUID();
     const base = { id, kind, angle: 0, depth };
     // Grips start straddling the rightmost point of the part.
-    const right = outline.reduce((a, p) => (p[0] > a[0] ? p : a));
+    const right = pts.reduce((a, p) => (p[0] > a[0] ? p : a));
     const c: Cutout =
       kind === 'grip'
         ? { ...base, x: Math.round(right[0]), y: Math.round(right[1]), w: 30, h: 20 }
         : { ...base, x: Math.round(cx), y: Math.round(cy), w: 20, h: 20 };
     cutouts.push(c);
     editor.select(id);
-    renderCutouts();
+    renderLists();
     ctx.schedule();
+  }
+
+  // ---------- Contours ----------
+
+  function manualContour(): Contour {
+    const [cx, cy] = [PAPER[0] / 2, PAPER[1] / 2];
+    return { id: crypto.randomUUID(), points: [[cx - 30, cy - 20], [cx + 30, cy - 20], [cx + 30, cy + 20], [cx - 30, cy + 20]], depth: null };
+  }
+
+  const contourSize = (c: Contour) => {
+    const xs = c.points.map((p) => p[0]);
+    const ys = c.points.map((p) => p[1]);
+    return `${num.format(Math.max(...xs) - Math.min(...xs))} × ${num.format(Math.max(...ys) - Math.min(...ys))} mm`;
+  };
+
+  function renderContours() {
+    contourList.innerHTML = contours
+      .map(
+        (c, i) => `<li data-id="${c.id}"${c.id === editor.selected ? ' class="selected"' : ''}>
+          <button type="button" class="entry" data-action="select">
+            <span class="plate-name">${i + 1}</span>
+            <span class="entry-text">Kontur ${i + 1}${c.depth !== null ? `<small>${num.format(c.depth)} mm tief</small>` : ''}</span>
+            <span class="entry-size">${contourSize(c)}</span>
+          </button>
+          <button type="button" class="icon" data-action="duplicate" title="Duplizieren">⧉</button>
+          <button type="button" class="icon" data-action="remove" title="Entfernen">✕</button>
+        </li>`,
+      )
+      .join('');
+    $('contour-count').textContent = contours.length > 1 ? String(contours.length) : '';
+    const c = contours.find((c) => c.id === editor.selected);
+    contourFields.hidden = !c;
+    if (!c) return;
+    contourFields.innerHTML = `
+      <label class="field"><span>Eigene Tiefe (mm)</span><input type="number" data-contour="depth" min="1" max="160" step="0.5" value="${c.depth ?? ''}" placeholder="${num.format(readFields().depth)} (wie oben)" /></label>
+      <div class="field"><span>Drehen</span><span class="inline"><button type="button" class="ghost" data-turn="-90" title="90° gegen den Uhrzeigersinn">↺ 90°</button><button type="button" class="ghost" data-turn="90" title="90° im Uhrzeigersinn">↻ 90°</button></span></div>`;
+  }
+
+  function turnContour(c: Contour, degrees: number) {
+    const [cx, cy] = shapeCenter(c.points);
+    const a = (degrees * Math.PI) / 180;
+    const [cos, sin] = [Math.cos(a), Math.sin(a)];
+    c.points = c.points.map(([x, y]): Pt => [cx + (x - cx) * cos - (y - cy) * sin, cy + (x - cx) * sin + (y - cy) * cos]);
+  }
+
+  contourList.addEventListener('click', (e) => {
+    const button = (e.target as Element).closest<HTMLButtonElement>('button[data-action]');
+    const id = button?.closest('li')?.dataset.id;
+    const index = contours.findIndex((c) => c.id === id);
+    if (!button || index < 0) return;
+    const action = button.dataset.action;
+    if (action === 'remove') {
+      contours.splice(index, 1);
+      if (editor.selected === id) editor.select(null);
+    } else if (action === 'duplicate') {
+      const src = contours[index];
+      const copy: Contour = {
+        id: crypto.randomUUID(),
+        points: src.points.map(([x, y]): Pt => [x + DUPLICATE_SHIFT, y + DUPLICATE_SHIFT]),
+        depth: src.depth,
+      };
+      contours.splice(index + 1, 0, copy);
+      editor.select(copy.id);
+    } else {
+      editor.select(id!);
+    }
+    editor.refresh();
+    renderLists();
+    if (action !== 'select') ctx.schedule();
+  });
+
+  contourFields.addEventListener('input', (e) => {
+    const el = e.target as HTMLInputElement;
+    const c = contours.find((c) => c.id === editor.selected);
+    if (!c || el.dataset.contour !== 'depth') return;
+    const v = Number(el.value);
+    c.depth = el.value === '' || !Number.isFinite(v) ? null : Math.max(1, v);
+    const small = contourList.querySelector(`li[data-id="${c.id}"] .entry-text`);
+    if (small) small.innerHTML = `Kontur ${contours.indexOf(c) + 1}${c.depth !== null ? `<small>${num.format(c.depth)} mm tief</small>` : ''}`;
+  });
+
+  contourFields.addEventListener('click', (e) => {
+    const turn = (e.target as Element).closest<HTMLElement>('[data-turn]')?.dataset.turn;
+    const c = contours.find((c) => c.id === editor.selected);
+    if (!turn || !c) return;
+    turnContour(c, Number(turn));
+    editor.refresh();
+    renderLists();
+    ctx.schedule();
+  });
+
+  $('contour-add').addEventListener('click', () => {
+    if (!image) return;
+    const c = manualContour();
+    contours.push(c);
+    editor.select(c.id);
+    renderLists();
+    ctx.schedule();
+  });
+
+  function renderLists() {
+    renderContours();
+    renderCutouts();
   }
 
   function renderCutouts() {
@@ -405,7 +532,7 @@ export function setupContour(ctx: Context) {
     } else {
       editor.select(id);
     }
-    renderCutouts();
+    renderLists();
   });
 
   for (const button of form.querySelectorAll<HTMLButtonElement>('[data-add]')) {
@@ -450,7 +577,7 @@ export function setupContour(ctx: Context) {
   function saveState() {
     try {
       const values = Object.fromEntries(PERSISTED.map((n) => [n, field<HTMLInputElement>(n).value]));
-      localStorage.setItem(STATE_KEY, JSON.stringify({ outline, cutouts, values }));
+      localStorage.setItem(STATE_KEY, JSON.stringify({ contours, cutouts, values }));
     } catch {
       // Storage is optional.
     }
@@ -460,21 +587,25 @@ export function setupContour(ctx: Context) {
     try {
       const saved = localStorage.getItem(IMAGE_KEY);
       const state = JSON.parse(localStorage.getItem(STATE_KEY) ?? 'null') as {
-        outline: Pt[];
+        contours?: Contour[];
+        // Before several contours were supported.
+        outline?: Pt[];
         cutouts: Cutout[];
         values: Record<string, string>;
       } | null;
-      if (!saved || !state || state.outline.length < 3) return;
+      if (!saved || !state) return;
+      const restored = state.contours ?? (state.outline ? [{ id: crypto.randomUUID(), points: state.outline, depth: null }] : []);
+      if (!restored.length) return;
       image = saved;
-      outline = state.outline;
+      contours = restored;
       cutouts = state.cutouts;
       for (const [n, v] of Object.entries(state.values)) {
         const el = field<HTMLInputElement>(n);
         if (el && PERSISTED.includes(n)) el.value = v;
       }
       photoName.textContent = 'Foto der letzten Sitzung';
-      editor.showContour(image, outline, cutouts);
-      renderCutouts();
+      editor.showContour(image, contours, cutouts);
+      renderLists();
       updateTools();
     } catch {
       // Corrupt storage: start fresh.
@@ -485,7 +616,6 @@ export function setupContour(ctx: Context) {
   return {
     updateReadouts,
     build,
-    hasOutline: () => outline.length >= 3,
     fileName: (b: Pick<ContourBuild, 'x' | 'y' | 'z'>) => `gridfinity_kontur_${b.x}x${b.y}x${b.z}`,
   };
 }

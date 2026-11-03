@@ -827,6 +827,10 @@ button.secondary:disabled {
   color: var(--accent-strong);
 }
 
+.cutout-fields .inline button {
+  flex: 1;
+}
+
 .cutout-fields {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -939,7 +943,24 @@ body[data-mode='contour'] .legend {
   fill: rgb(30 136 229 / 0.12);
   stroke: #1e88e5;
   stroke-width: 2;
-  pointer-events: none;
+  cursor: move;
+}
+
+.editor-svg .outline:hover {
+  fill: rgb(30 136 229 / 0.22);
+}
+
+.editor-svg .outline.selected {
+  fill: rgb(30 136 229 / 0.25);
+  stroke-width: 2.5;
+}
+
+.editor-svg .shape-stem {
+  stroke: #1e88e5;
+}
+
+.editor-svg .vtx.rot.shape-rot {
+  stroke: #1e88e5;
 }
 
 .editor-svg .sheet {
