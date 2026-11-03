@@ -44,6 +44,9 @@ const BOTTOM_MARK_MAX_LENGTH = 20;
 // wall between the pockets, plates with magnets on their floor.
 const BOTTOM_NAME_OPEN = 4.5;
 const BOTTOM_NAME_FLOOR = 10;
+// Size engraved into the bottom of one bin foot: centered between the magnet
+// holes (±13 mm, r 3.25) and well inside the 35.6 mm foot face.
+const BIN_BOTTOM_TEXT = { length: 26, height: 5 };
 const LABEL_MARGIN = 1;
 const ICON_GAP = 1.5;
 // With text present, icons may take at most this share of the label width.
@@ -78,6 +81,8 @@ export interface BinParams {
   lip: boolean;
   magnets: boolean;
   label: LabelParams | null;
+  // Engraved into the bottom of the middle foot, mirrored to read from below.
+  bottomText: Shape2D | null;
 }
 
 export interface MeshData {
@@ -131,10 +136,15 @@ export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
     );
   }
   const cellFoot = magnetHoles ? foot.subtract(magnetHoles) : foot;
+  const textCs = p.bottomText && toCrossSection(wasm, p.bottomText);
+  const placed = textCs && placeText(textCs, { ...BIN_BOTTOM_TEXT, rotate: 0, mirror: true, center: [0, 0] });
+  const markedFoot = placed ? cellFoot.subtract(prism(placed.cs, -0.01, BOTTOM_MARK_DEPTH)) : cellFoot;
+  const [mi, mj] = [Math.floor((p.x - 1) / 2), Math.floor((p.y - 1) / 2)];
   const feet: Manifold[] = [];
   for (let i = 0; i < p.x; i++) {
     for (let j = 0; j < p.y; j++) {
-      feet.push(cellFoot.translate((i - (p.x - 1) / 2) * GRID, (j - (p.y - 1) / 2) * GRID, 0));
+      const f = i === mi && j === mj ? markedFoot : cellFoot;
+      feet.push(f.translate((i - (p.x - 1) / 2) * GRID, (j - (p.y - 1) / 2) * GRID, 0));
     }
   }
 

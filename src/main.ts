@@ -212,6 +212,7 @@ async function buildConfig(m: ManifoldToplevel, c: BoxConfig): Promise<BinResult
       label: labelActive
         ? { depth: c.depth, relief: c.relief, align: c.align, text, textSize: c.textSize, icons }
         : null,
+      bottomText: textToShape(await loadFont('roboto'), `${c.x}×${c.y}×${c.z}`, 'left'),
     });
   } finally {
     collectGarbage();
