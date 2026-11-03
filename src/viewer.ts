@@ -58,6 +58,10 @@ export class Viewer {
     }
   }
 
+  clearModel(): void {
+    this.clear();
+  }
+
   show(result: BinResult, gridX: number, gridY: number): void {
     this.clear();
     this.group.add(new THREE.Mesh(toGeometry(result.body), this.bodyMaterial));

@@ -3,7 +3,7 @@ import type { CrossSection, FillRule, Manifold, ManifoldToplevel, Vec2, Vec3 } f
 // Dimensions follow the Gridfinity spec by Zack Freedman (all values in mm).
 export const GRID = 42;
 export const HEIGHT_UNIT = 7;
-const CLEARANCE = 0.5;
+export const CLEARANCE = 0.5;
 const OUTER_RADIUS = 3.75;
 // Foot profile (0.8 / 1.8 / 2.15) plus the bridge tying the feet together;
 // the inner floor sits at BASE_HEIGHT.
@@ -52,6 +52,8 @@ const ICON_GAP = 1.5;
 // With text present, icons may take at most this share of the label width.
 const ICON_WIDTH_SHARE = 0.5;
 const MIN_ICON_HEIGHT = 4;
+// Contour bins are solid; pockets stop this far above the bottom.
+export const INSERT_MIN_FLOOR = 6;
 
 // Parts are applied in order; 'subtract' parts cut into what came before.
 export interface Shape2D {
@@ -83,7 +85,31 @@ export interface BinParams {
   label: LabelParams | null;
   // Engraved into the bottom of the middle foot, mirrored to read from below.
   bottomText: Shape2D | null;
+  // Fills the bin solid up to its nominal height and cuts these pockets.
+  insert?: InsertParams | null;
 }
+
+export interface InsertCutout {
+  kind: 'rect' | 'circle' | 'grip';
+  // Center, size and rotation (degrees, counterclockwise) in bin coordinates.
+  // Circles use w as diameter; grips are capsules w long and h wide.
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  angle: number;
+  depth: number;
+}
+
+export interface InsertParams {
+  // Pocket outline in bin coordinates, already grown by the clearance.
+  pocket: Vec2[][];
+  depth: number;
+  cutouts: InsertCutout[];
+}
+
+// Pockets are clipped to this inset so the walls (and the lip) stay intact.
+export const insertInset = (lip: boolean) => (lip ? LIP_DEPTH : WALL);
 
 export interface MeshData {
   positions: Float32Array;
@@ -166,9 +192,11 @@ export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
     cavities.push(prism(footprint(WALL), floorZ, top + 1));
   }
 
+  // Solid bins keep only the cavity above the nominal height, i.e. the lip.
   let body = Manifold.union([...feet, prism(footprint(0), BASE_PROFILE_HEIGHT, top)]).subtract(
-    Manifold.union(cavities).trimByPlane([0, 0, 1], floorZ),
+    Manifold.union(cavities).trimByPlane([0, 0, 1], p.insert ? height : floorZ),
   );
+  if (p.insert) body = body.subtract(insertCuts(wasm, p.insert, footprint(insertInset(p.lip)), height));
 
   let relief: Manifold | null = null;
   const label = p.label;
@@ -333,6 +361,37 @@ export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinR
     Manifold.union([...pockets, ...engravings]),
   );
   return { body: toMeshData(body), relief: null, size: [width, depth, top] };
+}
+
+function insertCuts(wasm: ManifoldToplevel, ins: InsertParams, clip: CrossSection, height: number): Manifold {
+  const { Manifold, CrossSection } = wasm;
+  const { prism } = shapes(wasm);
+  const bottom = (depth: number) => Math.min(Math.max(height - depth, INSERT_MIN_FLOOR), height - 0.2);
+  const cut = (cs: CrossSection, depth: number) => prism(cs.intersect(clip), bottom(depth), height + 0.01);
+  const cuts: Manifold[] = [];
+  if (ins.pocket.length) cuts.push(cut(CrossSection.ofPolygons(ins.pocket, 'NonZero'), ins.depth));
+  for (const c of ins.cutouts) {
+    if (c.w <= 0 || c.h <= 0) continue;
+    if (c.kind === 'rect') {
+      cuts.push(cut(CrossSection.square([c.w, c.h], true).rotate(c.angle).translate([c.x, c.y]), c.depth));
+    } else if (c.kind === 'circle') {
+      cuts.push(cut(CrossSection.circle(c.w / 2, 64).translate([c.x, c.y]), c.depth));
+    } else {
+      // Capsule with a rounded bottom, scaled in z to the wanted depth, so a
+      // finger can slide under the part.
+      const r = Math.min(c.w, c.h) / 2;
+      const along = (Math.max(c.w, c.h) - 2 * r) / 2;
+      const ball = Manifold.sphere(r, 48);
+      const ends = c.w >= c.h ? [ball.translate(-along, 0, 0), ball.translate(along, 0, 0)] : [ball.translate(0, -along, 0), ball.translate(0, along, 0)];
+      const depth = height - bottom(c.depth);
+      const capsule = Manifold.hull(ends)
+        .scale([1, 1, depth / r])
+        .rotate([0, 0, c.angle])
+        .translate(c.x, c.y, height);
+      cuts.push(capsule.intersect(prism(clip, bottom(c.depth) - 0.01, height + 0.01)));
+    }
+  }
+  return Manifold.union(cuts);
 }
 
 interface Box2D {

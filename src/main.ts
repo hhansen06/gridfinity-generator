@@ -21,6 +21,7 @@ import { toBinaryStl } from './stl';
 import { toThreeMf, type Model3mf } from './threemf';
 import { DRIVES, findSymbol, HEADS, symbolToSvg, type SymbolDef } from './symbols';
 import { CUSTOM_PREFIX, loadCustomTypes, saveCustomTypes, SCREW_PRESETS, screwTypeLabel, type ScrewType } from './screws';
+import { setupContour } from './contour/mode';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const form = $<HTMLFormElement>('form');
@@ -86,6 +87,8 @@ let logo: Logo | null = null;
 let wasm: ManifoldToplevel | null = null;
 let lastResult: BinResult | null = null;
 let lastPlates: { layout: DrawerLayout; meshes: Map<string, BinResult>; name: string } | null = null;
+// File name of the last contour bin, set while its result is shown.
+let lastContourName = '';
 let generation = 0;
 
 // Everything needed to rebuild one box; plain data so it can be stored.
@@ -119,7 +122,7 @@ function readForm() {
   const num = (name: string, min: number, max: number) =>
     Math.min(max, Math.max(min, Math.round(Number(data.get(name)) || min)));
   return {
-    mode: data.get('mode') === 'plate' ? ('plate' as const) : ('box' as const),
+    mode: (['plate', 'contour'].includes(String(data.get('mode'))) ? data.get('mode') : 'box') as 'box' | 'plate' | 'contour',
     drawerW: Number(data.get('drawerW')) || 0,
     drawerD: Number(data.get('drawerD')) || 0,
     clearance: Math.max(0, Number(data.get('clearance')) || 0),
@@ -159,9 +162,11 @@ function updateReadouts(s: FormState) {
   set('y', `${mm.format(s.y * GRID - 0.5)} mm`);
   set('z', `${mm.format(s.z * HEIGHT_UNIT)} mm`);
   document.body.dataset.mode = s.mode;
-  if (s.mode === 'box') downloadBtn.textContent = 'STL';
-  download3mfBtn.textContent = s.mode === 'plate' ? '3MF' : '3MF mit Farben';
-  download3mfBtn.title = s.mode === 'plate' ? 'Alle Platten in einer Datei' : 'Box und Schrift als getrennte Teile mit Farben';
+  if (s.mode !== 'plate') downloadBtn.textContent = 'STL';
+  download3mfBtn.textContent = s.mode === 'box' ? '3MF mit Farben' : '3MF';
+  download3mfBtn.title =
+    s.mode === 'plate' ? 'Alle Platten in einer Datei' : s.mode === 'box' ? 'Box und Schrift als getrennte Teile mit Farben' : '';
+  if (s.mode === 'contour') contour.updateReadouts(s);
   $('threshold-out').textContent = String(s.threshold);
   $('depth-out').textContent = mm.format(s.depth);
   $('head-out').textContent = findSymbol(HEADS, s.head)?.name ?? 'ohne';
@@ -227,6 +232,7 @@ async function generate() {
 
   const started = performance.now();
   if (s.mode === 'plate') return generatePlates(s, run, started);
+  if (s.mode === 'contour') return generateContour(s, run, started);
   let result: BinResult;
   try {
     result = await buildConfig(wasm, currentConfig(s));
@@ -238,6 +244,7 @@ async function generate() {
   if (run !== generation) return;
   lastResult = result;
   lastPlates = null;
+  lastContourName = '';
   setStatus(null);
   viewer.show(result, s.x, s.y);
 
@@ -249,6 +256,43 @@ async function generate() {
     `<br>${tris.toLocaleString('de-DE')} Dreiecke · ${Math.round(performance.now() - started)} ms${note}`;
   downloadBtn.disabled = false;
   download3mfBtn.disabled = false;
+}
+
+// ---------- Konturbox ----------
+
+const contour = setupContour({ form, wasm: () => wasm, schedule: () => scheduleGenerate() });
+
+async function generateContour(s: FormState, run: number, started: number) {
+  let built;
+  try {
+    built = await contour.build(wasm!, s);
+  } catch (err) {
+    console.error(err);
+    setStatus('Die Geometrie konnte nicht erzeugt werden. Bitte Kontur prüfen.');
+    return;
+  }
+  if (run !== generation) return;
+  lastPlates = null;
+  setStatus(null);
+  if (!built) {
+    lastResult = null;
+    lastContourName = '';
+    viewer.clearModel();
+    statsEl.textContent = 'Foto laden, um die Kontur zu erzeugen.';
+    downloadBtn.disabled = download3mfBtn.disabled = true;
+    return;
+  }
+  const { result, x, y, notes } = built;
+  lastResult = result;
+  lastContourName = contour.fileName(built);
+  viewer.show(result, x, y);
+  const [w, d, h] = result.size;
+  const tris = result.body.indices.length / 3;
+  statsEl.innerHTML =
+    `<strong>${mm.format(w)} × ${mm.format(d)} × ${mm.format(h)} mm</strong>` +
+    `<br>${tris.toLocaleString('de-DE')} Dreiecke · ${Math.round(performance.now() - started)} ms` +
+    notes.map((n) => `<br><span class="warn">${escapeHtml(n)}</span>`).join('');
+  downloadBtn.disabled = download3mfBtn.disabled = false;
 }
 
 // ---------- Baseplates für eine Schublade ----------
@@ -512,7 +556,7 @@ downloadBtn.addEventListener('click', () => {
   }
   if (!lastResult) return;
   const meshes = lastResult.relief ? [lastResult.body, lastResult.relief] : [lastResult.body];
-  saveFile(toBinaryStl(meshes), `${fileBaseName(currentConfig(readForm()))}.stl`);
+  saveFile(toBinaryStl(meshes), `${lastContourName || fileBaseName(currentConfig(readForm()))}.stl`);
 });
 
 download3mfBtn.addEventListener('click', () => {
@@ -525,7 +569,7 @@ download3mfBtn.addEventListener('click', () => {
     return;
   }
   if (!lastResult) return;
-  const name = fileBaseName(currentConfig(s));
+  const name = lastContourName || fileBaseName(currentConfig(s));
   saveFile(toThreeMf([toModel(name, lastResult)], palette(s)), `${name}.3mf`);
 });
 
