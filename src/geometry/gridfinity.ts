@@ -105,7 +105,14 @@ export interface InsertParams {
   // Pocket outlines in bin coordinates, already grown by the clearance.
   pockets: { polygons: Vec2[][]; depth: number }[];
   cutouts: InsertCutout[];
+  // Texts on the top surface, in bin coordinates.
+  texts?: { polygons: Vec2[][]; relief: 'engraved' | 'inlay' }[];
+  // Pocket floors become a thin separate part for a second color.
+  colorFloor?: boolean;
 }
+
+// Thickness of the colored pocket floor: three 0.2 mm layers.
+export const FLOOR_LAYER = 0.6;
 
 // Pockets are clipped to this inset so the walls (and the lip) stay intact.
 export const insertInset = (lip: boolean) => (lip ? LIP_DEPTH : WALL);
@@ -195,9 +202,14 @@ export function buildBin(wasm: ManifoldToplevel, p: BinParams): BinResult {
   let body = Manifold.union([...feet, prism(footprint(0), BASE_PROFILE_HEIGHT, top)]).subtract(
     Manifold.union(cavities).trimByPlane([0, 0, 1], p.insert ? height : floorZ),
   );
-  if (p.insert) body = body.subtract(insertCuts(wasm, p.insert, footprint(insertInset(p.lip)), height));
+  let insertRelief: Manifold | null = null;
+  if (p.insert) {
+    const ins = insertCuts(wasm, p.insert, footprint(insertInset(p.lip)), height);
+    body = body.subtract(ins.removed);
+    insertRelief = ins.relief;
+  }
 
-  let relief: Manifold | null = null;
+  let relief: Manifold | null = insertRelief;
   const label = p.label;
   if (label) {
     // Below the lip so the feet of a stacked bin do not hit the raised label.
@@ -362,19 +374,32 @@ export function buildBaseplate(wasm: ManifoldToplevel, p: BaseplateParams): BinR
   return { body: toMeshData(body), relief: null, size: [width, depth, top] };
 }
 
-function insertCuts(wasm: ManifoldToplevel, ins: InsertParams, clip: CrossSection, height: number): Manifold {
+// Everything an insert removes from the solid bin, plus the separate colored
+// part (pocket floors and inlaid text).
+function insertCuts(
+  wasm: ManifoldToplevel,
+  ins: InsertParams,
+  clip: CrossSection,
+  height: number,
+): { removed: Manifold; relief: Manifold | null } {
   const { Manifold, CrossSection } = wasm;
   const { prism } = shapes(wasm);
   const bottom = (depth: number) => Math.min(Math.max(height - depth, INSERT_MIN_FLOOR), height - 0.2);
-  const cut = (cs: CrossSection, depth: number) => prism(cs.intersect(clip), bottom(depth), height + 0.01);
   const cuts: Manifold[] = [];
-  for (const p of ins.pockets) if (p.polygons.length) cuts.push(cut(CrossSection.ofPolygons(p.polygons, 'NonZero'), p.depth));
+  const floors: Manifold[] = [];
+  const cut = (shape: CrossSection, depth: number) => {
+    const cs = shape.intersect(clip);
+    const z = bottom(depth);
+    cuts.push(prism(cs, z, height + 0.01));
+    if (ins.colorFloor) floors.push(prism(cs, z - FLOOR_LAYER, z));
+  };
+  for (const p of ins.pockets) if (p.polygons.length) cut(CrossSection.ofPolygons(p.polygons, 'NonZero'), p.depth);
   for (const c of ins.cutouts) {
     if (c.w <= 0 || c.h <= 0) continue;
     if (c.kind === 'rect') {
-      cuts.push(cut(CrossSection.square([c.w, c.h], true).rotate(c.angle).translate([c.x, c.y]), c.depth));
+      cut(CrossSection.square([c.w, c.h], true).rotate(c.angle).translate([c.x, c.y]), c.depth);
     } else if (c.kind === 'circle') {
-      cuts.push(cut(CrossSection.circle(c.w / 2, 64).translate([c.x, c.y]), c.depth));
+      cut(CrossSection.circle(c.w / 2, 64).translate([c.x, c.y]), c.depth);
     } else {
       // Capsule with a rounded bottom, scaled in z to the wanted depth, so a
       // finger can slide under the part.
@@ -390,7 +415,29 @@ function insertCuts(wasm: ManifoldToplevel, ins: InsertParams, clip: CrossSectio
       cuts.push(capsule.intersect(prism(clip, bottom(c.depth) - 0.01, height + 0.01)));
     }
   }
-  return Manifold.union(cuts);
+  const cutAll = Manifold.union(cuts);
+  const removed = [cutAll];
+  const relief: Manifold[] = [];
+  // A shallow pocket's floor may lie inside a deeper neighbor: keep only
+  // what is still solid.
+  if (floors.length) {
+    const layer = Manifold.union(floors).subtract(cutAll);
+    removed.push(layer);
+    relief.push(layer);
+  }
+  for (const t of ins.texts ?? []) {
+    if (!t.polygons.length) continue;
+    const cs = CrossSection.ofPolygons(t.polygons, 'NonZero').intersect(clip);
+    if (t.relief === 'inlay') {
+      const inlay = prism(cs, height - ENGRAVE_DEPTH, height).subtract(cutAll);
+      removed.push(inlay);
+      relief.push(inlay);
+    } else {
+      removed.push(prism(cs, height - ENGRAVE_DEPTH, height + 0.01));
+    }
+  }
+  const reliefAll = relief.length ? Manifold.union(relief) : null;
+  return { removed: Manifold.union(removed), relief: reliefAll && !reliefAll.isEmpty() ? reliefAll : null };
 }
 
 interface Box2D {

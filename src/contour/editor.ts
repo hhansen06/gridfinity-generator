@@ -45,7 +45,8 @@ export class ContourEditor {
   // Id of the selected contour or cutout.
   selected: string | null = null;
   private mode: 'empty' | 'contour' | 'paper' = 'empty';
-  private image = '';
+  // Rectified photo, or null for a blank sheet.
+  private image: string | null = null;
   private size: Pt = PAPER;
   private overlay: Overlay | null = null;
   private view: View = { x: 0, y: 0, w: PAPER[0], h: PAPER[1] };
@@ -86,7 +87,7 @@ export class ContourEditor {
     this.empty.hidden = false;
   }
 
-  showContour(image: string, contours: Contour[], cutouts: Cutout[]): void {
+  showContour(image: string | null, contours: Contour[], cutouts: Cutout[]): void {
     this.mode = 'contour';
     this.image = image;
     this.size = PAPER;
@@ -168,7 +169,9 @@ export class ContourEditor {
     this.svg.setAttribute('viewBox', `${x} ${y} ${w} ${h}`);
     const [iw, ih] = this.size;
     const r = HANDLE_PX * this.unit();
-    let html = `<image href="${this.image}" x="0" y="0" width="${iw}" height="${ih}" preserveAspectRatio="none" />`;
+    let html = this.image
+      ? `<image href="${this.image}" x="0" y="0" width="${iw}" height="${ih}" preserveAspectRatio="none" />`
+      : `<rect class="blank-paper" x="0" y="0" width="${iw}" height="${ih}" />`;
     if (this.mode === 'paper' && this.paper) {
       const c = this.paper.corners;
       html += `<path class="sheet" d="${pathOf(c)}" />`;
@@ -224,6 +227,10 @@ export class ContourEditor {
     const sel = c.id === this.selected ? ' selected' : '';
     const t = `transform="translate(${fmt(c.x)} ${fmt(c.y)}) rotate(${fmt(c.angle)})"`;
     const attrs = `class="cut ${c.kind}${sel}" data-kind="move" data-id="${c.id}"`;
+    if (c.kind === 'text') {
+      const glyphs = (c.glyphs ?? []).map((poly) => pathOf(poly.map(([x, y]): Pt => [x * c.h, y * c.h]))).join('');
+      return `<g ${attrs} ${t}><rect class="text-box" x="${-c.w / 2}" y="${-c.h / 2}" width="${c.w}" height="${c.h}" /><path class="glyph" d="${glyphs}" /></g>`;
+    }
     if (c.kind === 'circle') return `<circle ${attrs} cx="${fmt(c.x)}" cy="${fmt(c.y)}" r="${fmt(c.w / 2)}" />`;
     const rx = c.kind === 'grip' ? Math.min(c.w, c.h) / 2 : 0;
     return `<rect ${attrs} ${t} x="${-c.w / 2}" y="${-c.h / 2}" width="${c.w}" height="${c.h}" rx="${rx}" />`;
@@ -353,6 +360,12 @@ export class ContourEditor {
         const [lx, ly] = toLocal(c, p);
         if (c.kind === 'circle') {
           c.w = c.h = fmt(Math.max(MIN_SIZE, 2 * Math.hypot(lx, ly)));
+        } else if (c.kind === 'text') {
+          // Texts keep their proportions.
+          const f = Math.max((2 * Math.abs(lx)) / c.w, (2 * Math.abs(ly)) / c.h);
+          const h = Math.max(MIN_SIZE, c.h * f);
+          c.w = fmt((c.w * h) / c.h);
+          c.h = fmt(h);
         } else {
           c.w = fmt(Math.max(MIN_SIZE, 2 * Math.abs(lx)));
           c.h = fmt(Math.max(MIN_SIZE, 2 * Math.abs(ly)));

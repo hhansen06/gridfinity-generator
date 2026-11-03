@@ -51,6 +51,7 @@
                 <span>Abstand zum Gegenstand <output id="offset-out">1</output> mm</span>
                 <input type="range" name="offset" min="0" max="5" step="0.1" value="1" />
               </label>
+              <label class="check"><input type="checkbox" name="colorFloor" /> Boden farbig absetzen (0,6 mm in der Zweitfarbe)</label>
               <div class="row">
                 <label class="field">
                   <span>Tiefe (mm)</span>
@@ -98,15 +99,16 @@
           </section>
 
           <section class="mode-contour">
-            <h2>Ausschnitte</h2>
+            <h2>Ausschnitte und Texte</h2>
             <div class="add-cutouts">
               <button type="button" class="ghost" data-add="rect">+ Rechteck</button>
               <button type="button" class="ghost" data-add="circle">+ Kreis</button>
               <button type="button" class="ghost" data-add="grip">+ Fingergriff</button>
+              <button type="button" class="ghost" data-add="text">+ Text</button>
             </div>
             <ul class="batch-list" id="cutout-list"></ul>
             <div id="cutout-fields" class="cutout-fields" hidden></div>
-            <p class="hint">Fingergriffe sind Mulden mit rundem Boden zum Herausnehmen und dürfen bis an die Wand reichen.</p>
+            <p class="hint">Fingergriffe sind Mulden mit rundem Boden zum Herausnehmen und dürfen bis an die Wand reichen. Texte liegen auf der Oberfläche, eingelegt in der Zweitfarbe oder graviert.</p>
           </section>
 
           <section class="mode-plate">
@@ -181,7 +183,7 @@
             <label class="check mode-box mode-contour"><input type="checkbox" name="magnets" /> Magnetlöcher (6×2 mm)</label>
             <div class="colors">
               <label class="color"><input type="color" name="bodyColor" value="#9aa3ad" /> <span>Farbe <span class="mode-box mode-contour">Box</span><span class="mode-plate">Platten</span></span></label>
-              <label class="color mode-box"><input type="color" name="reliefColor" value="#f28c28" /> Farbe Schrift</label>
+              <label class="color mode-box mode-contour"><input type="color" name="reliefColor" value="#f28c28" /> <span><span class="mode-box">Farbe Schrift</span><span class="mode-contour">Zweitfarbe</span></span></label>
             </div>
           </section>
 
@@ -327,6 +329,8 @@
               <strong>Foto vom Gegenstand auf DIN A4</strong>
               <p>Das Blatt dient als Maßstab: Die Kontur wird daraus automatisch vermessen und lässt sich danach per Drag &amp; Drop anpassen.</p>
               <button type="button" class="primary" id="photo-pick-2">Foto wählen…</button>
+              <button type="button" class="ghost wide" id="start-blank">Ohne Foto beginnen</button>
+              <small class="muted">Für einfache Boxen mit Löchern, Ausschnitten und Text.</small>
             </div>
           </div>
         </div>
@@ -334,6 +338,7 @@
         <div class="legend">
           <span class="mode-box mode-contour"><i class="sw body"></i>Box</span>
           <span class="mode-box"><i class="sw relief"></i>Beschriftung</span>
+          <span class="mode-contour"><i class="sw relief"></i>Boden &amp; Text</span>
           <span class="mode-plate"><i class="sw plate-a"></i><i class="sw plate-b"></i>Platten (abwechselnd)</span>
           <span class="mode-plate"><i class="sw outline"></i>Schublade</span>
           <span class="muted">Ziehen: drehen · Scrollen: zoomen · Rechtsklick: verschieben</span>

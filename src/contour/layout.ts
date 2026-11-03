@@ -2,10 +2,11 @@ import type { Vec2 } from 'manifold-3d';
 import { CLEARANCE, GRID } from '../geometry/gridfinity';
 import type { Pt } from './detect';
 
-export type CutoutKind = 'rect' | 'circle' | 'grip';
+export type CutoutKind = 'rect' | 'circle' | 'grip' | 'text';
 
 // In paper millimeters, y pointing down; angle in degrees, clockwise on screen.
-// Circles use w as diameter; grips are capsules w long and h wide.
+// Circles use w as diameter; grips are capsules w long and h wide. Texts are
+// h tall and w wide (w follows from the text) and lie on the top surface.
 export interface Cutout {
   id: string;
   kind: CutoutKind;
@@ -15,6 +16,13 @@ export interface Cutout {
   h: number;
   angle: number;
   depth: number;
+  text?: string;
+  font?: string;
+  relief?: 'engraved' | 'inlay';
+  // Text outline scaled to height 1 and centered, and the font and text it
+  // was made from; derived, not stored.
+  glyphs?: Pt[][];
+  glyphKey?: string;
 }
 
 // An object outline in paper millimeters; depth null uses the global depth.

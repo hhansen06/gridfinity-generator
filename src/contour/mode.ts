@@ -18,6 +18,7 @@ import {
   bestRotation,
   cellsFor,
   fitPoints,
+  local,
   makeLayout,
   shapeCenter,
   type Contour,
@@ -31,18 +32,27 @@ const IMAGE_KEY = 'gridfinity-contour-image-v1';
 const MAX_X = 10;
 const MAX_Z = 25;
 
-const KIND_NAMES: Record<CutoutKind, string> = { rect: 'Rechteck', circle: 'Kreis', grip: 'Fingergriff' };
+const KIND_NAMES: Record<CutoutKind, string> = { rect: 'Rechteck', circle: 'Kreis', grip: 'Fingergriff', text: 'Text' };
 const KIND_ICONS: Record<CutoutKind, string> = {
   rect: '<rect x="4" y="6" width="16" height="12" />',
   circle: '<circle cx="12" cy="12" r="8" />',
   grip: '<rect x="2" y="8" width="20" height="8" rx="4" />',
+  text: '<path d="M5 6h14M12 6v13" />',
 };
 // Field label per kind for w, h; null hides the field.
-const FIELD_LABELS: Record<CutoutKind, [string, string | null]> = {
+const FIELD_LABELS: Record<Exclude<CutoutKind, 'text'>, [string, string | null]> = {
   rect: ['Breite', 'Höhe'],
   circle: ['Durchmesser', null],
   grip: ['Länge', 'Breite'],
 };
+const FONTS: [string, string][] = [
+  ['roboto', 'Roboto Bold'],
+  ['roboto-slab', 'Roboto Slab'],
+  ['roboto-mono', 'Roboto Mono'],
+  ['bebas', 'Bebas Neue'],
+];
+const escapeHtml = (s: string) =>
+  s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
 
 export interface ContourForm {
   lip: boolean;
@@ -51,6 +61,7 @@ export interface ContourForm {
 
 interface ContourFields {
   sensitivity: number;
+  colorFloor: boolean;
   offset: number;
   depth: number;
   rotation: number;
@@ -104,6 +115,8 @@ export function setupContour(ctx: Context) {
   const field = <T extends HTMLInputElement | HTMLSelectElement>(name: string) => form.elements.namedItem(name) as T;
 
   let image: string | null = null;
+  // Started without a photo: a blank sheet to place cutouts and texts on.
+  let blank = false;
   let contours: Contour[] = [];
   let cutouts: Cutout[] = [];
   let photo: Photo | null = null;
@@ -139,6 +152,7 @@ export function setupContour(ctx: Context) {
     const units = (name: string) => (data.get(name) === 'auto' ? null : n(name, 1));
     return {
       sensitivity: n('sensitivity', 50),
+      colorFloor: data.has('colorFloor'),
       offset: Math.max(0, n('offset', 1)),
       depth: Math.max(1, n('pocketDepth', 15)),
       rotation: n('rotation', 0),
@@ -147,6 +161,9 @@ export function setupContour(ctx: Context) {
       cz: units('cz'),
     };
   }
+
+  // Cutouts that remove material (texts only touch the surface).
+  const cuts = () => cutouts.filter((c) => c.kind !== 'text');
 
   // ---------- Planning ----------
 
@@ -164,7 +181,7 @@ export function setupContour(ctx: Context) {
     const pocket = pockets.flatMap((p) => p.polygons);
     const inset = insertInset(lip);
     const layout = makeLayout(fitPoints(pocket, cutouts), f.rotation);
-    const deepest = Math.max(...pockets.map((p) => p.depth), ...cutouts.map((c) => c.depth));
+    const deepest = Math.max(1, ...pockets.map((p) => p.depth), ...cuts().map((c) => c.depth));
     const auto = {
       x: Math.min(MAX_X, cellsFor(layout.extent[0], inset)),
       y: Math.min(MAX_X, cellsFor(layout.extent[1], inset)),
@@ -186,7 +203,7 @@ export function setupContour(ctx: Context) {
     $('sensitivity-out').textContent = String(f.sensitivity);
     $('offset-out').textContent = num.format(f.offset);
     const m = ctx.wasm();
-    if (!m || !contours.length) {
+    if (!m || (!contours.length && !cutouts.length)) {
       editor.setOverlay(null);
       return;
     }
@@ -206,18 +223,27 @@ export function setupContour(ctx: Context) {
   }
 
   async function build(m: ManifoldToplevel, s: ContourForm): Promise<ContourBuild | null> {
-    if (!contours.length) return null;
+    if (!contours.length && !cutouts.length) return null;
     const f = readFields();
     const p = plan(m, f, s.lip);
     const angle = (c: Cutout) => p.layout.rotation - c.angle;
-    const insertCutouts: InsertCutout[] = cutouts.map((c) => {
+    const insertCutouts: InsertCutout[] = cutouts.flatMap((c) => {
+      if (c.kind === 'text') return [];
       const [x, y] = p.layout.toBin([c.x, c.y]);
-      return { kind: c.kind, x, y, w: c.w, h: c.kind === 'circle' ? c.w : c.h, angle: angle(c), depth: c.depth };
+      return [{ kind: c.kind, x, y, w: c.w, h: c.kind === 'circle' ? c.w : c.h, angle: angle(c), depth: c.depth }];
     });
+    const texts = cutouts.flatMap((c) =>
+      c.kind === 'text' && c.glyphs?.length
+        ? [{
+            polygons: c.glyphs.map((poly) => poly.map(([x, y]) => p.layout.toBin(local(c, [x * c.h, y * c.h])))),
+            relief: c.relief ?? 'engraved',
+          }]
+        : [],
+    );
     const notes: string[] = [];
     if (p.x < p.auto.x || p.y < p.auto.y) notes.push('Die Aussparung passt nicht ganz in die Box und wird abgeschnitten.');
     const maxDepth = p.z * HEIGHT_UNIT - INSERT_MIN_FLOOR;
-    if (Math.max(...p.pockets.map((q) => q.depth), ...cutouts.map((c) => c.depth)) > maxDepth) {
+    if (Math.max(0, ...p.pockets.map((q) => q.depth), ...cuts().map((c) => c.depth)) > maxDepth) {
       notes.push(`Tiefe auf ${num.format(maxDepth)} mm begrenzt (Box zu niedrig).`);
     }
     const bottomText = textToShape(await loadFont('roboto'), `${p.x}×${p.y}×${p.z}`, 'left');
@@ -233,6 +259,8 @@ export function setupContour(ctx: Context) {
         insert: {
           pockets: p.pockets.map((q) => ({ polygons: q.polygons.map((poly) => poly.map(p.layout.toBin)), depth: q.depth })),
           cutouts: insertCutouts,
+          texts,
+          colorFloor: f.colorFloor,
         },
       });
       saveState();
@@ -284,8 +312,8 @@ export function setupContour(ctx: Context) {
     } catch {
       // Too large or storage disabled: works for this session.
     }
-    if (fresh) cutouts = [];
-    detect(true);
+    blank = false;
+    detect(fresh);
   }
 
   function adjustPaper() {
@@ -296,7 +324,7 @@ export function setupContour(ctx: Context) {
         corners = result;
         showError(null);
         applyCorners(false);
-      } else if (image) {
+      } else if (image || blank) {
         editor.showContour(image, contours, cutouts);
       } else {
         editor.showEmpty();
@@ -310,6 +338,15 @@ export function setupContour(ctx: Context) {
     if (!image) return;
     if (!rectified) rectified = await imageData(image);
     detect(false);
+  }
+
+  function startBlank() {
+    blank = true;
+    showError(null);
+    editor.showContour(image, contours, cutouts);
+    updateTools();
+    renderLists();
+    ctx.schedule();
   }
 
   function detect(autoRotate: boolean) {
@@ -333,7 +370,7 @@ export function setupContour(ctx: Context) {
 
   function autoRotation() {
     const m = ctx.wasm();
-    if (!m || !contours.length) return;
+    if (!m || (!contours.length && !cutouts.length)) return;
     const lip = field<HTMLInputElement>('lip').checked;
     const f = { ...readFields(), rotation: 0 };
     const pts = fitPoints(plan(m, f, lip).overlay.pocket, cutouts);
@@ -342,17 +379,18 @@ export function setupContour(ctx: Context) {
 
   function updateTools() {
     photoTools.hidden = !image || editor.isPaper;
-    $('contour-section').hidden = !image;
+    $('contour-section').hidden = !image && !blank;
     paperAdjust.hidden = !photo;
   }
 
   // ---------- Cutouts ----------
 
   function addCutout(kind: CutoutKind) {
-    if (!contours.length) return;
-    // Next to the selected contour, or all of them.
+    if (!image && !blank) startBlank();
+    // Next to the selected contour, or all of them, or on the middle of the sheet.
     const shape = contours.find((c) => c.id === editor.selected);
     const pts = shape ? shape.points : contours.flatMap((c) => c.points);
+    if (!pts.length) pts.push([PAPER[0] / 2, PAPER[1] / 2]);
     const [cx, cy] = shapeCenter(pts);
     const depth = shape?.depth ?? readFields().depth;
     const id = crypto.randomUUID();
@@ -362,8 +400,11 @@ export function setupContour(ctx: Context) {
     const c: Cutout =
       kind === 'grip'
         ? { ...base, x: Math.round(right[0]), y: Math.round(right[1]), w: 30, h: 20 }
-        : { ...base, x: Math.round(cx), y: Math.round(cy), w: 20, h: 20 };
+        : kind === 'text'
+          ? { ...base, x: Math.round(cx), y: Math.round(cy), w: 20, h: 6, depth: 0, text: 'Text', font: 'roboto', relief: 'inlay' }
+          : { ...base, x: Math.round(cx), y: Math.round(cy), w: 20, h: 20 };
     cutouts.push(c);
+    if (kind === 'text') updateGlyphs();
     editor.select(id);
     renderLists();
     ctx.schedule();
@@ -459,7 +500,7 @@ export function setupContour(ctx: Context) {
   });
 
   $('contour-add').addEventListener('click', () => {
-    if (!image) return;
+    if (!image && !blank) return;
     const c = manualContour();
     contours.push(c);
     editor.select(c.id);
@@ -475,13 +516,14 @@ export function setupContour(ctx: Context) {
   function renderCutouts() {
     cutoutList.innerHTML = cutouts
       .map((c) => {
-        const size = c.kind === 'circle' ? `Ø ${num.format(c.w)}` : `${num.format(c.w)} × ${num.format(c.h)}`;
+        const name = c.kind === 'text' ? `„${escapeHtml((c.text ?? '').replace(/\n/g, ' '))}“` : KIND_NAMES[c.kind];
         return `<li data-id="${c.id}"${c.id === editor.selected ? ' class="selected"' : ''}>
           <button type="button" class="entry" data-action="select">
             <svg class="cut-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${KIND_ICONS[c.kind]}</svg>
-            <span class="entry-text">${KIND_NAMES[c.kind]}</span>
-            <span class="entry-size">${size} mm</span>
+            <span class="entry-text">${name}</span>
+            <span class="entry-size">${cutoutSize(c)}</span>
           </button>
+          <button type="button" class="icon" data-action="duplicate" title="Duplizieren">⧉</button>
           <button type="button" class="icon" data-action="remove" title="Entfernen">✕</button>
         </li>`;
       })
@@ -489,37 +531,120 @@ export function setupContour(ctx: Context) {
     const c = cutouts.find((c) => c.id === editor.selected);
     cutoutFields.hidden = !c;
     if (!c) return;
-    const [wLabel, hLabel] = FIELD_LABELS[c.kind];
     const input = (key: keyof Cutout, label: string, min: number, max: number, step: number) =>
       `<label class="field"><span>${label}</span><input type="number" data-field="${key}" min="${min}" max="${max}" step="${step}" value="${c[key]}" /></label>`;
+    const angle = input('angle', 'Winkel (°)', -180, 180, 1);
+    if (c.kind === 'text') {
+      const options = (list: [string, string][], value: string | undefined) =>
+        list.map(([v, l]) => `<option value="${v}"${v === value ? ' selected' : ''}>${l}</option>`).join('');
+      cutoutFields.innerHTML =
+        `<label class="field wide"><span>Text</span><textarea data-field="text" rows="2">${escapeHtml(c.text ?? '')}</textarea></label>` +
+        `<label class="field"><span>Schriftart</span><select data-field="font">${options(FONTS, c.font)}</select></label>` +
+        input('h', 'Höhe (mm)', 2, 100, 0.5) +
+        `<label class="field"><span>Ausführung</span><select data-field="relief">${options([['inlay', 'Eingelegt (Farbe)'], ['engraved', 'Graviert']], c.relief)}</select></label>` +
+        angle;
+      return;
+    }
+    const [wLabel, hLabel] = FIELD_LABELS[c.kind];
     cutoutFields.innerHTML =
       input('w', `${wLabel} (mm)`, 2, 300, 0.5) +
       (hLabel ? input('h', `${hLabel} (mm)`, 2, 300, 0.5) : '') +
       input('depth', 'Tiefe (mm)', 1, 160, 0.5) +
-      (c.kind !== 'circle' ? input('angle', 'Winkel (°)', -180, 180, 1) : '');
+      (c.kind !== 'circle' ? angle : '');
+  }
+
+  function cutoutSize(c: Cutout) {
+    if (c.kind === 'circle') return `Ø ${num.format(c.w)} mm`;
+    if (c.kind === 'text') return `${num.format(c.h)} mm hoch`;
+    return `${num.format(c.w)} × ${num.format(c.h)} mm`;
+  }
+
+  // ---------- Texts ----------
+
+  const glyphCache = new Map<string, Promise<{ polygons: Pt[][]; aspect: number }>>();
+
+  function glyphsFor(font: string, text: string) {
+    const key = `${font}\u0000${text}`;
+    let entry = glyphCache.get(key);
+    if (!entry) {
+      entry = loadFont(font).then((f) => {
+        const shape = text.trim() ? textToShape(f, text, 'center') : null;
+        const polygons = (shape?.parts[0].polygons ?? []) as Pt[][];
+        const all = polygons.flat();
+        if (!all.length) return { polygons: [], aspect: 1 };
+        const xs = all.map((p) => p[0]);
+        const ys = all.map((p) => p[1]);
+        const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+        const h = y1 - y0 || 1;
+        // Font y points up, paper y down.
+        const norm = polygons.map((poly) =>
+          poly.map(([x, y]): Pt => [(x - (x0 + x1) / 2) / h, -(y - (y0 + y1) / 2) / h]),
+        );
+        return { polygons: norm, aspect: (x1 - x0) / h };
+      });
+      if (glyphCache.size > 50) glyphCache.clear();
+      glyphCache.set(key, entry);
+    }
+    return entry;
+  }
+
+  // Fills in outlines and widths of texts whose content or font changed.
+  async function updateGlyphs() {
+    let changed = false;
+    for (const c of cutouts) {
+      if (c.kind !== 'text') continue;
+      const want = `${c.font}\u0000${c.text}`;
+      if (c.glyphKey === want) continue;
+      const g = await glyphsFor(c.font ?? 'roboto', c.text ?? '');
+      c.glyphs = g.polygons;
+      c.w = Math.max(1, Math.round(c.h * g.aspect * 100) / 100);
+      c.glyphKey = want;
+      changed = true;
+    }
+    if (changed) {
+      editor.refresh();
+      syncFields();
+      ctx.schedule();
+    }
   }
 
   // Keeps the numeric fields in step while a cutout is dragged.
   function syncFields() {
     const c = cutouts.find((c) => c.id === editor.selected);
     if (!c) return;
-    for (const el of cutoutFields.querySelectorAll<HTMLInputElement>('input[data-field]')) {
+    for (const el of cutoutFields.querySelectorAll<HTMLInputElement>('input[type="number"][data-field]')) {
       if (el !== document.activeElement) el.value = String(c[el.dataset.field as 'w' | 'h' | 'depth' | 'angle']);
     }
   }
 
-  cutoutFields.addEventListener('input', (e) => {
-    const el = e.target as HTMLInputElement;
+  const onCutoutField = (e: Event) => {
+    const el = e.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
     const c = cutouts.find((c) => c.id === editor.selected);
+    const key = el.dataset.field;
+    if (!c || !key) return;
+    if (key === 'text' || key === 'font') {
+      c[key] = el.value;
+      const name = cutoutList.querySelector(`li[data-id="${c.id}"] .entry-text`);
+      if (name && key === 'text') name.textContent = `„${c.text!.replace(/\n/g, ' ')}“`;
+      updateGlyphs();
+      return;
+    }
+    if (key === 'relief') {
+      c.relief = el.value as Cutout['relief'];
+      return;
+    }
     const v = Number(el.value);
-    if (!c || !el.dataset.field || el.value === '' || !Number.isFinite(v)) return;
-    const key = el.dataset.field as 'w' | 'h' | 'depth' | 'angle';
-    c[key] = key === 'angle' ? v : Math.max(key === 'depth' ? 1 : 2, v);
-    if (c.kind === 'circle' && key === 'w') c.h = c.w;
+    if (el.value === '' || !Number.isFinite(v)) return;
+    const k = key as 'w' | 'h' | 'depth' | 'angle';
+    if (c.kind === 'text' && k === 'h') c.w = (c.w * Math.max(2, v)) / c.h;
+    c[k] = k === 'angle' ? v : Math.max(k === 'depth' ? 1 : 2, v);
+    if (c.kind === 'circle' && k === 'w') c.h = c.w;
     editor.refresh();
     const size = cutoutList.querySelector(`li[data-id="${c.id}"] .entry-size`);
-    if (size) size.textContent = c.kind === 'circle' ? `Ø ${num.format(c.w)} mm` : `${num.format(c.w)} × ${num.format(c.h)} mm`;
-  });
+    if (size) size.textContent = cutoutSize(c);
+  };
+  cutoutFields.addEventListener('input', onCutoutField);
+  cutoutFields.addEventListener('change', onCutoutField);
 
   cutoutList.addEventListener('click', (e) => {
     const button = (e.target as Element).closest<HTMLButtonElement>('button[data-action]');
@@ -528,6 +653,14 @@ export function setupContour(ctx: Context) {
     if (button.dataset.action === 'remove') {
       cutouts.splice(cutouts.findIndex((c) => c.id === id), 1);
       editor.select(editor.selected === id ? null : editor.selected);
+      ctx.schedule();
+    } else if (button.dataset.action === 'duplicate') {
+      const index = cutouts.findIndex((c) => c.id === id);
+      const copy = { ...cutouts[index], id: crypto.randomUUID() };
+      copy.x += DUPLICATE_SHIFT;
+      copy.y += DUPLICATE_SHIFT;
+      cutouts.splice(index + 1, 0, copy);
+      editor.select(copy.id);
       ctx.schedule();
     } else {
       editor.select(id);
@@ -544,6 +677,7 @@ export function setupContour(ctx: Context) {
   const pick = () => photoInput.click();
   $('photo-pick').addEventListener('click', pick);
   $('photo-pick-2').addEventListener('click', pick);
+  $('start-blank').addEventListener('click', startBlank);
   photoInput.addEventListener('change', () => {
     const file = photoInput.files?.[0];
     if (file) setPhoto(file);
@@ -573,11 +707,15 @@ export function setupContour(ctx: Context) {
   // ---------- Persistence ----------
 
   const PERSISTED = ['offset', 'pocketDepth', 'rotation', 'cx', 'cy', 'cz', 'sensitivity'];
+  const PERSISTED_CHECKS = ['colorFloor'];
 
   function saveState() {
     try {
       const values = Object.fromEntries(PERSISTED.map((n) => [n, field<HTMLInputElement>(n).value]));
-      localStorage.setItem(STATE_KEY, JSON.stringify({ contours, cutouts, values }));
+      const checks = Object.fromEntries(PERSISTED_CHECKS.map((n) => [n, field<HTMLInputElement>(n).checked]));
+      // Glyphs are derived from the text and rebuilt on load.
+      const plain = cutouts.map(({ glyphs: _g, glyphKey: _k, ...c }) => c);
+      localStorage.setItem(STATE_KEY, JSON.stringify({ contours, cutouts: plain, values, checks, blank: blank && !image }));
     } catch {
       // Storage is optional.
     }
@@ -592,21 +730,29 @@ export function setupContour(ctx: Context) {
         outline?: Pt[];
         cutouts: Cutout[];
         values: Record<string, string>;
+        checks?: Record<string, boolean>;
+        blank?: boolean;
       } | null;
-      if (!saved || !state) return;
+      if (!state || (!saved && !state.blank)) return;
       const restored = state.contours ?? (state.outline ? [{ id: crypto.randomUUID(), points: state.outline, depth: null }] : []);
-      if (!restored.length) return;
-      image = saved;
+      if (!restored.length && !state.cutouts.length) return;
+      image = saved && !state.blank ? saved : null;
+      blank = !image;
       contours = restored;
       cutouts = state.cutouts;
       for (const [n, v] of Object.entries(state.values)) {
         const el = field<HTMLInputElement>(n);
         if (el && PERSISTED.includes(n)) el.value = v;
       }
-      photoName.textContent = 'Foto der letzten Sitzung';
+      for (const [n, v] of Object.entries(state.checks ?? {})) {
+        const el = field<HTMLInputElement>(n);
+        if (el && PERSISTED_CHECKS.includes(n)) el.checked = v;
+      }
+      if (image) photoName.textContent = 'Foto der letzten Sitzung';
       editor.showContour(image, contours, cutouts);
       renderLists();
       updateTools();
+      updateGlyphs();
     } catch {
       // Corrupt storage: start fresh.
     }

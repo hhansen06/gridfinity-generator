@@ -163,9 +163,13 @@ function updateReadouts(s: FormState) {
   set('z', `${mm.format(s.z * HEIGHT_UNIT)} mm`);
   document.body.dataset.mode = s.mode;
   if (s.mode !== 'plate') downloadBtn.textContent = 'STL';
-  download3mfBtn.textContent = s.mode === 'box' ? '3MF mit Farben' : '3MF';
+  download3mfBtn.textContent = s.mode === 'plate' ? '3MF' : '3MF mit Farben';
   download3mfBtn.title =
-    s.mode === 'plate' ? 'Alle Platten in einer Datei' : s.mode === 'box' ? 'Box und Schrift als getrennte Teile mit Farben' : '';
+    s.mode === 'plate'
+      ? 'Alle Platten in einer Datei'
+      : s.mode === 'box'
+        ? 'Box und Schrift als getrennte Teile mit Farben'
+        : 'Box sowie farbiger Boden und Text als getrennte Teile';
   if (s.mode === 'contour') contour.updateReadouts(s);
   $('threshold-out').textContent = String(s.threshold);
   $('depth-out').textContent = mm.format(s.depth);
@@ -287,7 +291,7 @@ async function generateContour(s: FormState, run: number, started: number) {
   lastContourName = contour.fileName(built);
   viewer.show(result, x, y);
   const [w, d, h] = result.size;
-  const tris = result.body.indices.length / 3;
+  const tris = (result.body.indices.length + (result.relief?.indices.length ?? 0)) / 3;
   statsEl.innerHTML =
     `<strong>${mm.format(w)} × ${mm.format(d)} × ${mm.format(h)} mm</strong>` +
     `<br>${tris.toLocaleString('de-DE')} Dreiecke · ${Math.round(performance.now() - started)} ms` +
@@ -541,9 +545,9 @@ function saveFile(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-function toModel(name: string, result: BinResult): Model3mf {
+function toModel(name: string, result: BinResult, accent = 'Beschriftung'): Model3mf {
   const parts = [{ name: 'Box', mesh: result.body, color: 0 }];
-  if (result.relief) parts.push({ name: 'Beschriftung', mesh: result.relief, color: 1 });
+  if (result.relief) parts.push({ name: accent, mesh: result.relief, color: 1 });
   return { name, parts, size: [result.size[0], result.size[1]] };
 }
 
@@ -570,7 +574,7 @@ download3mfBtn.addEventListener('click', () => {
   }
   if (!lastResult) return;
   const name = lastContourName || fileBaseName(currentConfig(s));
-  saveFile(toThreeMf([toModel(name, lastResult)], palette(s)), `${name}.3mf`);
+  saveFile(toThreeMf([toModel(name, lastResult, lastContourName ? 'Boden und Text' : undefined)], palette(s)), `${name}.3mf`);
 });
 
 // ---------- Stapelliste: mehrere Boxen in einer 3MF-Datei ----------

@@ -807,7 +807,7 @@ button.secondary:disabled {
 
 .add-cutouts {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 6px;
 }
 
@@ -825,6 +825,14 @@ button.secondary:disabled {
   height: 22px;
   flex-shrink: 0;
   color: var(--accent-strong);
+}
+
+.cutout-fields .wide {
+  grid-column: 1 / -1;
+}
+
+.editor-empty .wide {
+  margin: 10px 0 6px;
 }
 
 .cutout-fields .inline button {
@@ -1021,6 +1029,34 @@ body[data-mode='contour'] .legend {
 .editor-svg .cut.grip {
   fill: rgb(232 120 26 / 0.18);
   stroke-dasharray: 5 3;
+}
+
+.editor-svg .blank-paper {
+  fill: #fff;
+}
+
+.editor-svg .cut.text {
+  fill: none;
+  stroke: none;
+}
+
+.editor-svg .cut.text .text-box {
+  fill: transparent;
+  stroke: var(--accent-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0;
+}
+
+.editor-svg .cut.text:hover .text-box,
+.editor-svg .cut.text.selected .text-box {
+  opacity: 1;
+}
+
+.editor-svg .cut.text .glyph {
+  fill: var(--relief-color, #f28c28);
+  stroke: rgb(0 0 0 / 0.35);
+  stroke-width: 0.5;
 }
 
 .editor-svg .cut.selected {
