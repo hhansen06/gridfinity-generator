@@ -16,7 +16,7 @@ interface Callbacks {
 
 type Drag =
   | { kind: 'vertex'; id: string; i: number }
-  | { kind: 'shape'; id: string; last: Pt }
+  | { kind: 'shape'; id: string; start: Pt; center: Pt; orig: Pt[] }
   | { kind: 'shapeRotate'; id: string; center: Pt; start: number; orig: Pt[] }
   | { kind: 'move'; id: string; dx: number; dy: number }
   | { kind: 'size'; id: string }
@@ -34,6 +34,8 @@ interface View {
 const HANDLE_PX = 5.5;
 const ROTATE_GAP_PX = 28;
 const MIN_SIZE = 2;
+const SNAP_KEY = 'gridfinity-contour-snap-v1';
+const SNAP_STEPS = [1, 2, 5, 10];
 
 const fmt = (v: number) => Math.round(v * 100) / 100;
 const pathOf = (pts: Pt[]) => (pts.length ? `M${pts.map(([x, y]) => `${fmt(x)} ${fmt(y)}`).join('L')}Z` : '');
@@ -57,6 +59,8 @@ export class ContourEditor {
   // vertex are detected here.
   private lastTap = { key: '', time: 0 };
   private paper: { corners: Pt[]; done: (corners: Pt[] | null) => void } | null = null;
+  // Positions snap to a grid of this step (mm) on the sheet.
+  private snap = loadSnap();
 
   constructor(
     private svg: SVGSVGElement,
@@ -76,6 +80,7 @@ export class ContourEditor {
     });
     svg.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     bar.addEventListener('click', (e) => this.onBar(e));
+    bar.addEventListener('change', (e) => this.onSnapChange(e));
     new ResizeObserver(() => this.render()).observe(svg);
     this.showEmpty();
   }
@@ -140,9 +145,54 @@ export class ContourEditor {
       this.mode === 'paper'
         ? `<span>Ziehe die vier Punkte auf die Ecken des Blatts.</span>
            <span class="bar-actions"><button type="button" class="ghost" data-bar="cancel">Abbrechen</button><button type="button" class="primary" data-bar="apply">Übernehmen</button></span>`
-        : `<span>Kontur anklicken · Punkte ziehen · <b>+</b> fügt ein · Doppelklick löscht · Mausrad zoomt</span>
-           <span class="bar-actions"><button type="button" class="ghost" data-bar="fit">Einpassen</button></span>`;
+        : `<span>Anklicken · Ziehen · <b>+</b> fügt ein · Doppelklick löscht · Mausrad zoomt · Alt ohne Raster</span>
+           <span class="bar-actions">
+             <label class="snap-toggle" title="Positionen am Raster ausrichten"><input type="checkbox" data-snap="on"${this.snap.on ? ' checked' : ''} /> Raster</label>
+             <select data-snap="step" title="Rasterweite">${SNAP_STEPS.map((v) => `<option value="${v}"${v === this.snap.step ? ' selected' : ''}>${v} mm</option>`).join('')}</select>
+             <button type="button" class="ghost" data-bar="fit">Einpassen</button>
+           </span>`;
     this.fit();
+  }
+
+  private onSnapChange(e: Event): void {
+    const el = e.target as HTMLInputElement | HTMLSelectElement;
+    if (el.dataset.snap === 'on') this.snap.on = (el as HTMLInputElement).checked;
+    else if (el.dataset.snap === 'step') this.snap.step = Number(el.value) || 5;
+    else return;
+    try {
+      localStorage.setItem(SNAP_KEY, JSON.stringify(this.snap));
+    } catch {
+      // Only a convenience.
+    }
+    this.render();
+  }
+
+  private snapped(p: Pt, e: { altKey: boolean }): Pt {
+    if (!this.snap.on || e.altKey) return p;
+    const s = this.snap.step;
+    return [Math.round(p[0] / s) * s, Math.round(p[1] / s) * s];
+  }
+
+  private gridSvg(): string {
+    if (!this.snap.on) return '';
+    const s = this.snap.step;
+    const [w, h] = this.size;
+    // Only the part of the sheet in view, and never finer than 4 px.
+    const v = this.view;
+    if (s / this.unit() < 4) return '';
+    let minor = '';
+    let major = '';
+    for (let x = Math.max(0, Math.ceil(v.x / s) * s); x <= Math.min(w, v.x + v.w); x += s) {
+      const line = `M${fmt(x)} 0V${h}`;
+      if (Math.round(x) % 10 === 0 && s < 10) major += line;
+      else minor += line;
+    }
+    for (let y = Math.max(0, Math.ceil(v.y / s) * s); y <= Math.min(h, v.y + v.h); y += s) {
+      const line = `M0 ${fmt(y)}H${w}`;
+      if (Math.round(y) % 10 === 0 && s < 10) major += line;
+      else minor += line;
+    }
+    return `<path class="grid-minor" d="${minor}" /><path class="grid-major" d="${major}" />`;
   }
 
   private onBar(e: Event): void {
@@ -179,6 +229,7 @@ export class ContourEditor {
         .map(([cx, cy], i) => `<circle class="vtx corner" data-kind="corner" data-i="${i}" cx="${cx}" cy="${cy}" r="${r * 1.3}" />`)
         .join('');
     } else {
+      html += this.gridSvg();
       html += `<rect class="paper-edge" x="0" y="0" width="${iw}" height="${ih}" />`;
       html += '<g class="overlay"></g>';
       html += this.contours
@@ -275,7 +326,7 @@ export class ContourEditor {
       this.drag = { kind: 'pan', x: e.clientX, y: e.clientY, view: { ...this.view } };
       if (e.button === 0) this.setSelected(null);
     } else if (kind === 'mid' && shape) {
-      shape.points.splice(i + 1, 0, p);
+      shape.points.splice(i + 1, 0, this.snapped(p, e));
       this.drag = { kind: 'vertex', id, i: i + 1 };
       this.render();
       this.cb.change(false);
@@ -291,7 +342,7 @@ export class ContourEditor {
       }
       this.drag = { kind: 'vertex', id, i };
     } else if (kind === 'shape' && shape) {
-      this.drag = { kind: 'shape', id, last: p };
+      this.drag = { kind: 'shape', id, start: p, center: shapeCenter(shape.points), orig: shape.points.map((q) => [...q] as Pt) };
       this.setSelected(id);
     } else if (kind === 'shapeRotate' && shape) {
       const center = shapeCenter(shape.points);
@@ -331,14 +382,16 @@ export class ContourEditor {
       const shape = this.contours.find((c) => c.id === d.id);
       if (!shape) return;
       if (d.kind === 'vertex') {
-        shape.points[d.i] = p;
+        shape.points[d.i] = this.snapped(p, e);
       } else if (d.kind === 'shape') {
-        const [dx, dy] = [p[0] - d.last[0], p[1] - d.last[1]];
-        for (const q of shape.points) {
-          q[0] += dx;
-          q[1] += dy;
-        }
-        d.last = p;
+        // The center of the outline snaps, not the grabbed point.
+        const want: Pt = [d.center[0] + p[0] - d.start[0], d.center[1] + p[1] - d.start[1]];
+        const [cx, cy] = this.snapped(want, e);
+        const [dx, dy] = [cx - d.center[0], cy - d.center[1]];
+        shape.points.forEach((q, k) => {
+          q[0] = d.orig[k][0] + dx;
+          q[1] = d.orig[k][1] + dy;
+        });
       } else {
         const step = e.shiftKey ? 15 : 1;
         const a = (Math.round((deg(d.center, p) - d.start) / step) * step * Math.PI) / 180;
@@ -354,8 +407,9 @@ export class ContourEditor {
       const c = this.cutouts.find((c) => c.id === d.id);
       if (!c) return;
       if (d.kind === 'move') {
-        c.x = fmt(p[0] + d.dx);
-        c.y = fmt(p[1] + d.dy);
+        const [x, y] = this.snapped([p[0] + d.dx, p[1] + d.dy], e);
+        c.x = fmt(x);
+        c.y = fmt(y);
       } else if (d.kind === 'size') {
         const [lx, ly] = toLocal(c, p);
         if (c.kind === 'circle') {
@@ -412,4 +466,14 @@ export class ContourEditor {
 export function normalizeAngle(a: number): number {
   const r = ((a % 360) + 360) % 360;
   return r > 180 ? r - 360 : r;
+}
+
+function loadSnap(): { on: boolean; step: number } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SNAP_KEY) ?? 'null') as { on?: boolean; step?: number } | null;
+    if (saved && SNAP_STEPS.includes(saved.step ?? 0)) return { on: !!saved.on, step: saved.step! };
+  } catch {
+    // Fall back to the default.
+  }
+  return { on: false, step: 5 };
 }

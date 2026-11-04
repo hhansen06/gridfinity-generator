@@ -1031,6 +1031,45 @@ body[data-mode='contour'] .legend {
   stroke-dasharray: 5 3;
 }
 
+.editor-svg .grid-minor,
+.editor-svg .grid-major {
+  fill: none;
+  stroke: #1e88e5;
+  pointer-events: none;
+}
+
+.editor-svg .grid-minor {
+  stroke-width: 0.5;
+  opacity: 0.25;
+}
+
+.editor-svg .grid-major {
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+.snap-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.snap-toggle input {
+  accent-color: var(--accent);
+}
+
+.bar-actions {
+  align-items: center;
+}
+
+.bar-actions select {
+  width: auto;
+  padding: 4px 6px;
+}
+
 .editor-svg .blank-paper {
   fill: #fff;
 }

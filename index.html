@@ -23,11 +23,15 @@
           </div>
 
           <section class="mode-contour">
-            <h2>Foto</h2>
+            <div class="section-head">
+              <h2>Foto</h2>
+              <button type="button" class="link" id="contour-reset" hidden>Alles zurücksetzen</button>
+            </div>
             <div class="logo-drop" id="photo-drop">
               <input type="file" id="photo-input" accept="image/*" hidden />
               <button type="button" class="ghost" id="photo-pick">Foto wählen…</button>
               <span id="photo-name" class="muted">Gegenstand auf DIN A4</span>
+              <button type="button" class="icon" id="photo-clear" title="Foto entfernen (Konturen und Ausschnitte bleiben)" hidden>✕</button>
             </div>
             <p class="hint">Gegenstand auf ein weißes A4-Blatt (hochkant) legen und senkrecht von oben fotografieren. Das ganze Blatt muss zu sehen sein, am besten auf dunklem Untergrund.</p>
             <small id="photo-error" class="error" hidden></small>
@@ -42,6 +46,18 @@
                 <button type="button" class="ghost" id="paper-adjust">Blattecken anpassen</button>
               </div>
             </div>
+          </section>
+
+          <section class="mode-contour">
+            <h2>Datei</h2>
+            <div class="row tool-row">
+              <button type="button" class="ghost" id="project-save">Speichern…</button>
+              <button type="button" class="ghost" id="project-open">Öffnen…</button>
+            </div>
+            <label class="check"><input type="checkbox" id="project-photo" checked /> Foto mitspeichern</label>
+            <input type="file" id="project-input" accept=".gfkontur,application/json" hidden />
+            <small id="project-error" class="error" hidden></small>
+            <p class="hint">Konturen, Ausschnitte, Texte und Einstellungen als bearbeitbare .gfkontur-Datei. Dateien lassen sich auch auf das Foto-Feld ziehen.</p>
           </section>
 
           <section class="mode-contour">

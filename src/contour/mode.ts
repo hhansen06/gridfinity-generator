@@ -14,6 +14,7 @@ import { textToShape } from '../geometry/text';
 import { loadFont } from '../fonts';
 import { detectObjects, findPaper, loadPhoto, PAPER, rectify, type Photo, type Pt } from './detect';
 import { ContourEditor, type Overlay } from './editor';
+import { FILE_EXTENSION, parseProject, serializeProject, type GridValue, type Project } from './fileformat';
 import {
   bestRotation,
   cellsFor,
@@ -381,6 +382,50 @@ export function setupContour(ctx: Context) {
     photoTools.hidden = !image || editor.isPaper;
     $('contour-section').hidden = !image && !blank;
     paperAdjust.hidden = !photo;
+    $('photo-clear').hidden = !image;
+    $('contour-reset').hidden = !image && !blank;
+  }
+
+  function forgetPhoto() {
+    image = null;
+    photo = null;
+    corners = null;
+    rectified = null;
+    photoName.textContent = 'Gegenstand auf DIN A4';
+    photoName.classList.add('muted');
+    showError(null);
+    try {
+      localStorage.removeItem(IMAGE_KEY);
+    } catch {
+      // Storage is optional.
+    }
+  }
+
+  // Keeps contours and cutouts on a blank sheet.
+  function removePhoto() {
+    forgetPhoto();
+    if (contours.length || cutouts.length) {
+      startBlank();
+    } else {
+      reset();
+    }
+  }
+
+  function reset() {
+    forgetPhoto();
+    blank = false;
+    contours = [];
+    cutouts = [];
+    editor.select(null);
+    editor.showEmpty();
+    try {
+      localStorage.removeItem(STATE_KEY);
+    } catch {
+      // Storage is optional.
+    }
+    renderLists();
+    updateTools();
+    ctx.schedule();
   }
 
   // ---------- Cutouts ----------
@@ -693,15 +738,143 @@ export function setupContour(ctx: Context) {
       e.preventDefault();
       zone.classList.remove('over');
       const file = e.dataTransfer?.files[0];
-      if (file) setPhoto(file);
+      if (file) {
+        if (isProjectFile(file)) openProject(file);
+        else setPhoto(file);
+      }
     });
   }
   $('contour-redetect').addEventListener('click', () => redetect());
   field<HTMLInputElement>('sensitivity').addEventListener('change', () => redetect());
   paperAdjust.addEventListener('click', adjustPaper);
+  $('photo-clear').addEventListener('click', removePhoto);
+  // Two clicks instead of a confirm() dialog.
+  const resetBtn = $<HTMLButtonElement>('contour-reset');
+  let armed = 0;
+  resetBtn.addEventListener('click', () => {
+    if (!armed) {
+      resetBtn.textContent = 'Wirklich alles löschen?';
+      armed = window.setTimeout(() => {
+        armed = 0;
+        resetBtn.textContent = 'Alles zurücksetzen';
+      }, 3000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = 0;
+    resetBtn.textContent = 'Alles zurücksetzen';
+    reset();
+  });
   $('rotation-auto').addEventListener('click', () => {
     autoRotation();
     ctx.schedule();
+  });
+
+  // ---------- File ----------
+
+  const projectError = $('project-error');
+
+  function showProjectError(message: string | null) {
+    projectError.hidden = !message;
+    projectError.textContent = message ?? '';
+  }
+
+  function currentProject(withPhoto: boolean): Project {
+    const value = (n: string) => field<HTMLInputElement>(n).value;
+    const checked = (n: string) => field<HTMLInputElement>(n).checked;
+    const gridValue = (n: string): GridValue => (value(n) === 'auto' ? 'auto' : Number(value(n)));
+    const f = readFields();
+    return {
+      photo: withPhoto ? image : null,
+      settings: {
+        clearance: f.offset,
+        depth: f.depth,
+        rotation: f.rotation,
+        grid: { x: gridValue('cx'), y: gridValue('cy'), z: gridValue('cz') },
+        lip: checked('lip'),
+        magnets: checked('magnets'),
+        colorFloor: f.colorFloor,
+        sensitivity: f.sensitivity,
+        colors: { body: value('bodyColor'), accent: value('reliefColor') },
+      },
+      contours,
+      cutouts,
+    };
+  }
+
+  function saveProject() {
+    if (!contours.length && !cutouts.length) {
+      showProjectError('Es gibt noch nichts zu speichern.');
+      return;
+    }
+    showProjectError(null);
+    const withPhoto = $<HTMLInputElement>('project-photo').checked;
+    const blob = new Blob([serializeProject(currentProject(withPhoto))], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `kontur_${new Date().toISOString().slice(0, 10)}${FILE_EXTENSION}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  async function openProject(file: File) {
+    let project: Project;
+    try {
+      if (file.size > 20_000_000) throw new Error('Die Datei ist zu groß.');
+      project = parseProject(await file.text());
+    } catch (err) {
+      showProjectError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    showProjectError(null);
+    showError(null);
+    const { settings: st } = project;
+    const set = (n: string, v: string) => (field<HTMLInputElement>(n).value = v);
+    const check = (n: string, v: boolean) => (field<HTMLInputElement>(n).checked = v);
+    set('offset', String(st.clearance));
+    set('pocketDepth', String(st.depth));
+    set('rotation', String(st.rotation));
+    set('cx', String(st.grid.x));
+    set('cy', String(st.grid.y));
+    set('cz', String(st.grid.z));
+    set('sensitivity', String(st.sensitivity));
+    set('bodyColor', st.colors.body);
+    set('reliefColor', st.colors.accent);
+    check('lip', st.lip);
+    check('magnets', st.magnets);
+    check('colorFloor', st.colorFloor);
+
+    photo = null;
+    corners = null;
+    rectified = null;
+    image = project.photo;
+    blank = !image;
+    contours = project.contours;
+    cutouts = project.cutouts;
+    try {
+      if (image) localStorage.setItem(IMAGE_KEY, image);
+      else localStorage.removeItem(IMAGE_KEY);
+    } catch {
+      // Storage is optional.
+    }
+    photoName.textContent = image ? `Foto aus ${file.name}` : 'Gegenstand auf DIN A4';
+    photoName.classList.toggle('muted', !image);
+    editor.select(null);
+    editor.showContour(image, contours, cutouts);
+    renderLists();
+    updateTools();
+    await updateGlyphs();
+    ctx.schedule();
+  }
+
+  const isProjectFile = (file: File) => file.name.toLowerCase().endsWith(FILE_EXTENSION) || file.type === 'application/json';
+  const projectInput = $<HTMLInputElement>('project-input');
+  $('project-save').addEventListener('click', saveProject);
+  $('project-open').addEventListener('click', () => projectInput.click());
+  projectInput.addEventListener('change', () => {
+    const file = projectInput.files?.[0];
+    if (file) openProject(file);
+    projectInput.value = '';
   });
 
   // ---------- Persistence ----------
